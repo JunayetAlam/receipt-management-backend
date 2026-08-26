@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'crypto';
 import httpStatus from 'http-status';
-import { OTPFor } from '@prisma/client';
+import { OTPFor } from '../../generated/prisma/client';
 import AppError from '../errors/AppError';
 import { insecurePrisma } from './prisma';
 import { hashSid } from './sessions';

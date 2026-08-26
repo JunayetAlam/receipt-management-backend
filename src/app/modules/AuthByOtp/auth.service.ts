@@ -20,7 +20,7 @@ import {
   listUserSessions,
 } from '../../utils/sessions';
 import { firebaseAuth } from '../../utils/firebase';
-import { FirebaseProvider, User } from '@prisma/client';
+import { FirebaseProvider, User } from '../../../generated/prisma/client';
 
 // TOKEN-BASED AUTH remnant:
 // import { Secret, SignOptions, JwtPayload } from 'jsonwebtoken';

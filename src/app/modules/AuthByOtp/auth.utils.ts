@@ -9,7 +9,7 @@ import { createSession, hashSid } from '../../utils/sessions';
 import { Request, Response } from 'express';
 import { setSessionCookie } from '../../utils/cookieOptions';
 import sendResponse from '../../utils/sendResponse';
-import { User, UserRoleEnum } from '@prisma/client';
+import { User, UserRoleEnum } from '../../../generated/prisma/client';
 
 type AuthUserSource = {
   id: string;

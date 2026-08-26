@@ -10,7 +10,7 @@ import AppError from '../../errors/AppError';
  */
 import { generateToken } from '../../utils/token/generateToken';
 import { insecurePrisma, prisma } from '../../utils/prisma';
-import { User } from '@prisma/client';
+import { User } from '../../../generated/prisma/client';
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { verifyToken } from '../../utils/token/verifyToken';

@@ -4,7 +4,7 @@
  * Previously used by AuthByOtp login / refresh-token to mint a JWT access token
  * (despite the name, this never issued a refresh JWT).
  */
-import { User } from '@prisma/client';
+import { User } from '../../../generated/prisma/client';
 import { Secret, SignOptions } from 'jsonwebtoken';
 import httpStatus from 'http-status';
 import config from '../../../config';

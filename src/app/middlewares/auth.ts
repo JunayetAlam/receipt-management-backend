@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import httpStatus from 'http-status';
-import { UserRoleEnum } from '@prisma/client';
+import { UserRoleEnum } from '../../generated/prisma/client';
 import config from '../../config';
 import AppError from '../errors/AppError';
 import { AuthUser } from '../interface';

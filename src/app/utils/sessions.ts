@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { Request, Response } from 'express';
-import { Session, User } from '@prisma/client';
+import { Session, User } from '../../generated/prisma/client';
 import config from '../../config';
 import { insecurePrisma } from './prisma';
 import { setSessionCookie } from './cookieOptions';

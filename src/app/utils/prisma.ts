@@ -1,13 +1,16 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
+import { PrismaClient } from '../../generated/prisma/client';
 import config from '../../config';
+
+const pool = new Pool({
+  connectionString: config.database_url,
+  connectionTimeoutMillis: 5000,
+});
 
 const createPrismaClient = (omitUserSecrets: boolean) =>
   new PrismaClient({
-    datasources: {
-      db: {
-        url: config.database_url,
-      },
-    },
+    adapter: new PrismaPg(pool),
     log: config.env === 'development' ? ['error', 'warn'] : ['error'],
     ...(omitUserSecrets
       ? {

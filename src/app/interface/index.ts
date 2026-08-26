@@ -1,4 +1,4 @@
-import { UserRoleEnum } from '@prisma/client';
+import { UserRoleEnum } from '../../generated/prisma/client';
 
 export type AuthUser = {
   id: string;
