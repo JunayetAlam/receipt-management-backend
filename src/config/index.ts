@@ -1,12 +1,39 @@
 import dotenv from 'dotenv';
 import path from 'path';
 
+const nodeEnv =
+  process.env.NODE_ENV === 'production' ? 'production' : 'development';
+
 dotenv.config({ path: path.join(process.cwd(), '.env') });
+dotenv.config({
+  path: path.join(process.cwd(), `.env.${nodeEnv}`),
+  override: true,
+});
+
+const buildLocalDatabaseUrl = () => {
+  const slug = process.env.PROJECT_SLUG;
+  const user = process.env.POSTGRES_USER;
+  const password = process.env.POSTGRES_PASSWORD;
+  const port = process.env.POSTGRES_PORT;
+  if (!slug || !user || !password || !port) {
+    return undefined;
+  }
+  return `postgresql://${user}:${encodeURIComponent(password)}@localhost:${port}/${slug}?schema=public`;
+};
+
+if (!process.env.DATABASE_URL) {
+  const localUrl = buildLocalDatabaseUrl();
+  if (localUrl) {
+    process.env.DATABASE_URL = localUrl;
+  }
+}
 
 export default {
   env: process.env.NODE_ENV,
   project_name: process.env.PROJECT_NAME || '',
+  project_slug: process.env.PROJECT_SLUG || '',
   port: process.env.PORT,
+  database_url: process.env.DATABASE_URL,
   super_admin_password: process.env.SUPER_ADMIN_PASSWORD,
   bcrypt_salt_rounds: process.env.BCRYPT_SALT_ROUNDS,
   mail: process.env.MAILTRAP_USER,
@@ -51,11 +78,6 @@ export default {
     access_key: process.env.DO_SPACE_ACCESS_KEY,
     secret_key: process.env.DO_SPACE_SECRET_KEY,
     bucket: process.env.DO_SPACE_BUCKET,
-  },
-  stripe: {
-    published_key: process.env.STRIPE_PUBLISHED_KEY,
-    stripe_secret_key: process.env.STRIPE_SECRET_KEY,
-    stripe_webhook: process.env.STRIPE_WEBHOOK,
   },
   cloudinary: {
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,

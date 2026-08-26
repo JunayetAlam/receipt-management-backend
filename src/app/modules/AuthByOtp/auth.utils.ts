@@ -1,10 +1,11 @@
 import httpStatus from 'http-status';
+import config from '../../../config';
 import AppError from '../../errors/AppError';
 import { AuthUser } from '../../interface';
 import { generateOTP, otpExpiryTime } from '../../utils/otp';
 import { insecurePrisma, prisma } from '../../utils/prisma';
 import { sendOtp } from '../../utils/sendOtp';
-import { createSession } from '../../utils/sessions';
+import { createSession, hashSid } from '../../utils/sessions';
 import { Request, Response } from 'express';
 import { setSessionCookie } from '../../utils/cookieOptions';
 import sendResponse from '../../utils/sendResponse';
@@ -50,27 +51,24 @@ export const resendOtpUtil = async (email: string) => {
 
   const otp = generateOTP();
 
-  await prisma.$transaction(async tx => {
-    const user = await tx.user.update({
-      where: { email: email },
-      data: {
-        otp,
-        otpExpiry: otpExpiryTime(),
-        otpFor: 'USER_VERIFICATION',
-      },
-    });
+  if (config.env === 'development') {
+    console.log(`[DEV OTP] ${email} => ${otp}`);
+  }
 
-    sendOtp({ email: user.email, otp });
-
-    return {
-      otp,
-      message: 'Verify Otp has sent to your email',
-    };
+  await prisma.user.update({
+    where: { email: email },
+    data: {
+      otp: hashSid(otp),
+      otpExpiry: otpExpiryTime(),
+      otpFor: 'USER_VERIFICATION',
+      otpAttempts: 0,
+    },
   });
+
+  await sendOtp({ email, otp });
 
   return {
     message: 'Verification otp sent successfully. Please check your email.',
-    otp,
   };
 };
 

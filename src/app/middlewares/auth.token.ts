@@ -25,17 +25,9 @@ type TupleHasDuplicate<T extends readonly unknown[]> = T extends [
 type NoDuplicates<T extends readonly unknown[]> =
   TupleHasDuplicate<T> extends true ? never : T;
 
-const auth = <
-  T extends readonly (
-    | UserRoleEnum
-    | 'ANY'
-    | 'OPTIONAL'
-    | 'CHECK_SUBSCRIPTION'
-  )[],
->(
+const auth = <T extends readonly (UserRoleEnum | 'ANY' | 'OPTIONAL')[]>(
   ...roles: NoDuplicates<T> extends never ? never : T
 ) => {
-  const doesCheckSubscription = roles.includes('CHECK_SUBSCRIPTION');
   return async (req: Request, _res: Response, next: NextFunction) => {
     try {
       const token = req.headers.authorization;
@@ -56,22 +48,6 @@ const auth = <
         where: {
           id: verifyUserToken.id,
         },
-        include: {
-          ...(doesCheckSubscription && {
-            payments: {
-              where: {
-                paymentType: 'SUBSCRIPTION',
-                paymentStatus: 'SUCCESS',
-              },
-              select: {
-                id: true,
-                paymentStatus: true,
-                subscriptionPackageId: true,
-                endAt: true,
-              },
-            },
-          }),
-        },
       });
 
       if (!user) {
@@ -89,22 +65,6 @@ const auth = <
 
       if (user.status === 'BLOCKED') {
         throw new AppError(httpStatus.UNAUTHORIZED, 'You are Blocked!');
-      }
-      const payments = user.payments;
-      if (doesCheckSubscription && !roles.includes('SUPERADMIN')) {
-        const isVerified =
-          new Date(
-            payments?.filter(
-              (item: { paymentStatus: string }) =>
-                item.paymentStatus === 'SUCCESS',
-            )[0]?.endAt || '',
-          ) >= new Date();
-        if (!isVerified) {
-          throw new AppError(
-            httpStatus.FORBIDDEN,
-            'Your subscription has expired or is not active. Please subscribe to continue accessing this feature.',
-          );
-        }
       }
 
       if (user?.profilePhoto) {

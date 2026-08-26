@@ -6,7 +6,6 @@ import AppError from '../errors/AppError';
 import { AuthUser } from '../interface';
 import { clearAuthCookies } from '../utils/cookieOptions';
 import { getValidSession, touchSession } from '../utils/sessions';
-import { insecurePrisma } from '../utils/prisma';
 
 type TupleHasDuplicate<T extends readonly unknown[]> = T extends [
   infer F,
@@ -36,16 +35,10 @@ const toAuthUser = (user: {
 });
 
 const auth = <
-  T extends readonly (
-    | UserRoleEnum
-    | 'ANY'
-    | 'OPTIONAL'
-    | 'CHECK_SUBSCRIPTION'
-  )[],
+  T extends readonly (UserRoleEnum | 'ANY' | 'OPTIONAL')[],
 >(
   ...roles: NoDuplicates<T> extends never ? never : T
 ) => {
-  const doesCheckSubscription = roles.includes('CHECK_SUBSCRIPTION');
   return async (req: Request, res: Response, next: NextFunction) => {
     const isOptional = roles.includes('OPTIONAL');
 
@@ -80,31 +73,6 @@ const auth = <
       if (user.status === 'BLOCKED') {
         clearAuthCookies(res);
         throw new AppError(httpStatus.UNAUTHORIZED, 'You are Blocked!');
-      }
-
-      if (doesCheckSubscription && !roles.includes('SUPERADMIN')) {
-        const payments = await insecurePrisma.payment.findMany({
-          where: {
-            userId: user.id,
-            paymentType: 'SUBSCRIPTION',
-            paymentStatus: 'SUCCESS',
-          },
-          select: {
-            paymentStatus: true,
-            endAt: true,
-          },
-        });
-        const isVerified =
-          new Date(
-            payments?.filter(item => item.paymentStatus === 'SUCCESS')[0]
-              ?.endAt || '',
-          ) >= new Date();
-        if (!isVerified) {
-          throw new AppError(
-            httpStatus.FORBIDDEN,
-            'Your subscription has expired or is not active. Please subscribe to continue accessing this feature.',
-          );
-        }
       }
 
       await touchSession(session, res, sid as string);

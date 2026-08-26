@@ -1,7 +1,9 @@
+import { randomInt } from 'crypto';
+
 export function generateOTP(): string {
-  const otp = Math.floor(Math.random() * 1000000);
-  return otp.toString().padStart(6, '0');
+  return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
+
 export function otpExpiryTime() {
   const currentTime = Date.now();
   const expiryTime = currentTime + 5 * 60 * 1000;
@@ -25,5 +27,5 @@ export function getOtpStatusMessage(otpExpiryTime: Date): string {
     }
   }
 
-  return "No active OTP found. You can request a new one.";
+  return 'No active OTP found. You can request a new one.';
 }

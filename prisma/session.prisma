@@ -1,7 +1,7 @@
 model Session {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
+  id String @id @default(uuid())
 
-  userId String @db.ObjectId
+  userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   tokenHash  String   @unique

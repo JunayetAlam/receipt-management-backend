@@ -101,42 +101,44 @@ const loginWithFirebase = catchAsync(async (req, res) => {
   await createSessionUtil(user as User, req, res);
 });
 
+const INVALID_CREDENTIALS = 'Invalid email or password';
+const FORGOT_PASSWORD_MESSAGE =
+  'If an account exists, a verification code has been sent.';
+
 const loginUser = catchAsync(async (req, res) => {
   const payload = req.body;
-  const userData = await insecurePrisma.user.findUniqueOrThrow({
+  const userData = await insecurePrisma.user.findUnique({
     where: {
       email: payload.email,
     },
   });
-  if (userData.isDeleted) {
-    throw new AppError(
-      httpStatus.NOT_FOUND,
-      'Account has been deleted. Please contact support to reactivate your account',
-    );
+
+  if (
+    !userData ||
+    userData.isDeleted ||
+    userData.status === 'BLOCKED' ||
+    userData.loginWay === 'FIREBASE'
+  ) {
+    throw new AppError(httpStatus.UNAUTHORIZED, INVALID_CREDENTIALS);
   }
-  if (userData.status === 'BLOCKED') {
-    throw new AppError(httpStatus.FORBIDDEN, 'Account has been blocked');
-  }
-  if (userData.loginWay === 'FIREBASE') {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      'Email already in use with different login method',
-    );
-  }
-  const isCorrectPassword: Boolean = await bcrypt.compare(
+
+  const isCorrectPassword = await bcrypt.compare(
     payload.password,
     userData.password || '',
   );
 
   if (!isCorrectPassword) {
-    throw new AppError(httpStatus.BAD_REQUEST, 'Password incorrect');
+    throw new AppError(httpStatus.UNAUTHORIZED, INVALID_CREDENTIALS);
   }
+
   if (userData.role !== 'SUPERADMIN' && !userData.isEmailVerified) {
-    const result = await resendOtpUtil(userData.email);
+    await resendOtpUtil(userData.email);
     sendResponse(res, {
       statusCode: httpStatus.OK,
-      message: result.message,
-      data: result,
+      message: 'Please verify your email. A verification code has been sent.',
+      data: {
+        message: 'Please verify your email. A verification code has been sent.',
+      },
     });
     return;
   }
@@ -193,8 +195,9 @@ const registerUser = catchAsync(async (req, res) => {
   const userData = {
     ...payload,
     password: hashedPassword,
-    otp,
+    otp: hashSid(otp),
     otpExpiry: otpExpiryTime(),
+    otpAttempts: 0,
   };
 
   await prisma.$transaction(async tx => {
@@ -223,9 +226,7 @@ const registerUser = catchAsync(async (req, res) => {
         message:
           'Account created, but email could not be sent. Check MAIL_PASS (Gmail App Password).',
         data: {
-          message: 'Please use the Dev OTP to verify your account',
-          otp,
-          emailSendFailed: true,
+          message: 'Please check your email to verify your account',
         },
       });
       return;
@@ -236,13 +237,9 @@ const registerUser = catchAsync(async (req, res) => {
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     message: 'User Register Successfully. Check your mail to verify',
-    data:
-      config.env === 'development'
-        ? {
-            message: 'Please check your Email to verify your account',
-            otp,
-          }
-        : 'Please check your Email to verify your account',
+    data: {
+      message: 'Please check your Email to verify your account',
+    },
   });
 });
 
@@ -258,6 +255,7 @@ const verifyEmail = catchAsync(async (req, res) => {
       otpExpiry: null,
       isEmailVerified: true,
       otpFor: 'NOT',
+      otpAttempts: 0,
     },
     select: {
       id: true,
@@ -291,7 +289,9 @@ const resendVerificationOtpToNumber = catchAsync(async (req, res) => {
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: result.message,
-    data: result,
+    data: {
+      message: result.message,
+    },
   });
 });
 
@@ -356,57 +356,42 @@ const changePassword = catchAsync(async (req, res) => {
 
 const forgetPassword = catchAsync(async (req, res) => {
   const { email } = req.body;
-  const user = await insecurePrisma.user.findFirstOrThrow({
+  const user = await insecurePrisma.user.findUnique({
     where: {
       email: email,
     },
   });
 
-  if (!user.isEmailVerified) {
-    throw new AppError(httpStatus.FORBIDDEN, 'You are not verified!');
-  }
+  if (
+    user &&
+    user.isEmailVerified &&
+    !user.isDeleted &&
+    user.status !== 'BLOCKED' &&
+    user.loginWay !== 'FIREBASE'
+  ) {
+    const otp = generateOTP();
 
-  if (user.isDeleted) {
-    throw new AppError(
-      httpStatus.NOT_FOUND,
-      'Account has been deleted. Please contact support to reactivate your account',
-    );
-  }
+    if (config.env === 'development') {
+      console.log(`[DEV OTP] ${email} => ${otp}`);
+    }
 
-  if (user.status === 'BLOCKED') {
-    throw new AppError(httpStatus.FORBIDDEN, 'User is blocked');
-  }
-
-  if (user.loginWay === 'FIREBASE') {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      'Email already in use with different login method',
-    );
-  }
-
-  const otp = generateOTP();
-
-  await prisma.$transaction(async tx => {
-    const user = await tx.user.update({
+    await prisma.user.update({
       where: { email: email },
       data: {
-        otp,
+        otp: hashSid(otp),
         otpExpiry: otpExpiryTime(),
         otpFor: 'FORGOT_PASSWORD',
+        otpAttempts: 0,
       },
     });
-    sendOtp({ email: user.email, otp });
 
-    return {
-      message: 'Verify Otp has sent to your email',
-    };
-  });
+    await sendOtp({ email: user.email, otp });
+  }
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     data: {
-      message: 'Verification otp sent successfully. Please check your inbox.',
-      otp,
+      message: FORGOT_PASSWORD_MESSAGE,
     },
   });
 });
@@ -434,6 +419,7 @@ const verifyForgotPassOtp = catchAsync(async (req, res) => {
       passwordResetToken: hashSid(resetToken),
       passwordResetTokenExpires: new Date(Date.now() + RESET_TOKEN_TTL_MS),
       otpFor: 'NOT',
+      otpAttempts: 0,
     },
   });
 
