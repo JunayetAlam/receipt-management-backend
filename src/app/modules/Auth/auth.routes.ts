@@ -1,3 +1,8 @@
+/**
+ * TOKEN-BASED AUTH remnant.
+ * Not used by default (this module is unmounted). Session cookies are the active auth path.
+ * Restore AuthRouters in src/app/routes/index.ts to use link-based JWT verification again.
+ */
 import express from 'express';
 import validateRequest from '../../middlewares/validateRequest';
 import { authValidation } from './auth.validation';

@@ -3,12 +3,17 @@ import httpStatus from 'http-status';
 import { JwtPayload, Secret, SignOptions } from 'jsonwebtoken';
 import config from '../../../config';
 import AppError from '../../errors/AppError';
-import { generateToken } from '../../utils/generateToken';
+/**
+ * TOKEN-BASED AUTH remnant.
+ * Not used by default (this module is unmounted). Session cookies are the active auth path.
+ * Restore AuthRouters in src/app/routes/index.ts to use link-based JWT verification again.
+ */
+import { generateToken } from '../../utils/token/generateToken';
 import { insecurePrisma, prisma } from '../../utils/prisma';
 import { User } from '@prisma/client';
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { verifyToken } from '../../utils/verifyToken';
+import { verifyToken } from '../../utils/token/verifyToken';
 import sendResponse from '../../utils/sendResponse';
 import { sendLinkViaMail } from '../../utils/sendMail';
 import catchAsync from '../../utils/catchAsync';
@@ -23,7 +28,7 @@ const loginUser = catchAsync(async (req, res) => {
 
   const isCorrectPassword: boolean = await bcrypt.compare(
     payload.password,
-    userData.password,
+    userData.password || '',
   );
 
   if (!isCorrectPassword) {
@@ -303,7 +308,7 @@ const changePassword = catchAsync(async (req, res) => {
 
   const isCorrectPassword: boolean = await bcrypt.compare(
     payload.oldPassword,
-    userData.password,
+    userData.password || '',
   );
 
   if (!isCorrectPassword) {

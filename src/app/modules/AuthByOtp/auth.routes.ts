@@ -6,66 +6,68 @@ import { AuthServices } from './auth.service';
 
 const router = express.Router();
 
-// POST /auth/login
 router.post(
   '/login',
   validateRequest.body(authValidation.loginUser),
-  AuthServices.loginUser
+  AuthServices.loginUser,
 );
 
-// POST /auth/register
+router.post(
+  '/login-with-firebase',
+  validateRequest.body(authValidation.loginWithFirebase),
+  AuthServices.loginWithFirebase,
+);
+
 router.post(
   '/register',
   validateRequest.body(authValidation.registerUser),
-  AuthServices.registerUser
-);
-router.post(
-  '/refresh-token',
-  auth('ANY'),
-  AuthServices.refreshToken
+  AuthServices.registerUser,
 );
 
-// POST /auth/verify-email
+// TOKEN-BASED AUTH remnant — JWT refresh. Session idle/absolute TTL replaces this.
+// router.post('/refresh-token', auth('ANY'), AuthServices.refreshToken);
+
 router.post(
   '/verify-email',
   validateRequest.body(authValidation.verifyEmail),
-  AuthServices.verifyEmail
+  AuthServices.verifyEmail,
 );
 
-// POST /auth/resend-verification-otp
 router.post(
   '/resend-verification-otp',
   validateRequest.body(authValidation.resendOtp),
-  AuthServices.resendVerificationOtpToNumber
+  AuthServices.resendVerificationOtpToNumber,
 );
 
-// PATCH /auth/change-password (requires auth)
 router.patch(
   '/change-password',
   auth('ANY'),
   validateRequest.body(authValidation.changePassword),
-  AuthServices.changePassword
+  AuthServices.changePassword,
 );
 
-// POST /auth/forget-password
 router.post(
   '/forget-password',
   validateRequest.body(authValidation.forgetPassword),
-  AuthServices.forgetPassword
+  AuthServices.forgetPassword,
 );
 
-// POST /auth/verify-forgot-password-otp
 router.post(
   '/verify-forgot-password-otp',
   validateRequest.body(authValidation.verifyForgotOtp),
-  AuthServices.verifyForgotPassOtp
+  AuthServices.verifyForgotPassOtp,
 );
 
-// POST /auth/reset-password
 router.post(
   '/reset-password',
   validateRequest.body(authValidation.resetPassword),
-  AuthServices.resetPassword
+  AuthServices.resetPassword,
 );
+
+router.post('/logout', auth('ANY'), AuthServices.logoutUser);
+
+router.get('/logged-in-devices', auth('ANY'), AuthServices.getLoggedInDevices);
+
+router.delete('/devices/:id', auth('ANY'), AuthServices.removeDevice);
 
 export const AuthByOtpRouters = router;

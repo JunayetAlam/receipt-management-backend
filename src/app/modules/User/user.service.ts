@@ -4,10 +4,11 @@ import QueryBuilder from '../../builder/QueryBuilder';
 import { prisma } from '../../utils/prisma';
 import { Request } from 'express';
 import AppError from '../../errors/AppError';
-import { JwtPayload } from 'jsonwebtoken';
 import catchAsync from '../../utils/catchAsync';
 import sendResponse from '../../utils/sendResponse';
 import { deleteFromMinIO, uploadToMinIO } from '../Upload/uploadToMinio';
+import { destroyAllUserSessions } from '../../utils/sessions';
+import { clearAuthCookies } from '../../utils/cookieOptions';
 
 const getAllUsers = catchAsync(async (req, res) => {
   const user = req.user;
@@ -29,6 +30,7 @@ const getAllUsers = catchAsync(async (req, res) => {
       email: true,
       role: true,
       profilePhoto: true,
+      loginWay: true,
       ...(user.role === 'SUPERADMIN' && { isDeleted: true, createdAt: true, updatedAt: true, status: true, }),
     })
     .exclude()
@@ -115,6 +117,7 @@ const getUserDetails = catchAsync(async (req, res) => {
       email: true,
       role: true,
       profilePhoto: true,
+      loginWay: true,
       ...(user.role === 'SUPERADMIN' && { isDeleted: true, createdAt: true, updatedAt: true, status: true, }),
     },
   });
@@ -216,6 +219,10 @@ const updateUserStatus = catchAsync(async (req, res) => {
     },
   });
 
+  if (status === UserStatus.BLOCKED) {
+    await destroyAllUserSessions(id);
+  }
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'User status updated successfully',
@@ -242,6 +249,9 @@ const deleteMyProfileFromDB = catchAsync(async (req, res) => {
       passwordResetTokenExpires: null,
     }
   });
+
+  await destroyAllUserSessions(id);
+  clearAuthCookies(res);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

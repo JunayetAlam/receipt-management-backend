@@ -3,8 +3,8 @@ model User {
   firstName   String
   lastName    String
   email       String       @unique
-  phoneNumber String       @unique
-  password    String
+  phoneNumber String?      @unique
+  password    String?
   role        UserRoleEnum @default(USER)
 
   status UserStatus @default(ACTIVE)
@@ -27,13 +27,18 @@ model User {
   emailVerificationToken        String?
   emailVerificationTokenExpires DateTime?
 
-  sentMessages     Message[]          @relation("SentMessages")
+  loginWay LoginWay? @default(EMAIL)
 
-  payments         Payment[]
-  transactions     Transaction[]
-  notifications    NotificationUser[]
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  firebaseUid      String?
+  firebaseProvider FirebaseProvider?
+
+  sentMessages  Message[]          @relation("SentMessages")
+  payments      Payment[]
+  transactions  Transaction[]
+  notifications NotificationUser[]
+  sessions      Session[]
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
 
   @@map("users")
 }
@@ -53,4 +58,14 @@ enum UserStatus {
   ACTIVE
   INACTIVE
   BLOCKED
+}
+
+enum LoginWay {
+  EMAIL
+  FIREBASE
+}
+
+enum FirebaseProvider {
+  GOOGLE
+  FACEBOOK
 }

@@ -24,8 +24,7 @@ export function setupWebSocketServer(server: any) {
     wss = new WebSocketServer({ server });
     wss.on('connection', async (ws: CustomWebSocket, req: Request) => {
         console.log({ connectedUser: Array.from(connectedUsers).map(item => item.userId) })
-        const token = req.headers.authorization;
-        const user = await socketAuth(ws, token);
+        const user = await socketAuth(ws, req);
         if (!user) return;
 
         // if (!checkSubscription(ws, user)) return;

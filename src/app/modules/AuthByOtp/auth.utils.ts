@@ -1,130 +1,97 @@
-import { User } from "@prisma/client";
-import { insecurePrisma, prisma } from "../../utils/prisma";
-import AppError from "../../errors/AppError";
-import httpStatus from "http-status";
-import { generateToken } from "../../utils/generateToken";
-import { Secret, SignOptions } from "jsonwebtoken";
-import config from "../../../config";
-import { generateOTP, otpExpiryTime } from "../../utils/otp";
-import { sendOtp } from "../../utils/sendOtp";
+import httpStatus from 'http-status';
+import AppError from '../../errors/AppError';
+import { AuthUser } from '../../interface';
+import { generateOTP, otpExpiryTime } from '../../utils/otp';
+import { insecurePrisma, prisma } from '../../utils/prisma';
+import { sendOtp } from '../../utils/sendOtp';
+import { createSession } from '../../utils/sessions';
+import { Request, Response } from 'express';
+import { setSessionCookie } from '../../utils/cookieOptions';
+import sendResponse from '../../utils/sendResponse';
+import { User, UserRoleEnum } from '@prisma/client';
 
-export const generateRefreshToken = async (email: string, user?: User) => {
-    let userData: User;
-    if (user) {
-        userData = user
-    } else {
-        userData = await insecurePrisma.user.findUniqueOrThrow({
-            where: {
-                email: email,
-            },
-        });
-    }
+type AuthUserSource = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: UserRoleEnum;
+  profilePhoto?: string | null;
+};
 
-    if (userData.isDeleted) {
-        throw new AppError(httpStatus.NOT_FOUND, 'Account has been deleted. Please contact support to reactivate your account');
-    }
-
-    if (userData.status === 'BLOCKED') {
-        throw new AppError(httpStatus.FORBIDDEN, 'Account has been blocked');
-    }
-
-    if (userData.role === 'SUPERADMIN') {
-        const accessToken = await generateToken(
-            {
-                id: userData.id,
-                name: userData.firstName + userData.lastName,
-                email: userData.email,
-                role: userData.role,
-                // isPaid: true
-            },
-            config.jwt.access_secret as Secret,
-            config.jwt.access_expires_in as SignOptions['expiresIn'],
-        );
-        return {
-            id: userData.id,
-            role: userData.role,
-            accessToken: accessToken,
-            isPaid: true
-        };
-    }
-    // const payments = await prisma.payment.count({
-    //   where: {
-    //     subscriptionPackage: {
-    //       userType: {
-    //         has: userData.role
-    //       }
-    //     },
-    //     paymentType: 'SUBSCRIPTION',
-    //     paymentStatus: 'SUCCESS',
-    //     endAt: {
-    //       gte: new Date()
-    //     },
-    //     userId: userData.id
-    //   }
-    // });
-    const accessToken = await generateToken(
-        {
-            id: userData.id,
-            name: userData.firstName + userData.lastName,
-            email: userData.email,
-            role: userData.role,
-            // isPaid: payments > 0 ? true : false
-        },
-        config.jwt.access_secret as Secret,
-        config.jwt.access_expires_in as SignOptions['expiresIn'],
-    );
-    return {
-        id: userData.id,
-        role: userData.role,
-        accessToken: accessToken,
-        // isPaid: payments > 0 ? true : false
-    };
-}
+export const toAuthUser = (user: AuthUserSource): AuthUser => ({
+  id: user.id,
+  name: `${user.firstName} ${user.lastName}`,
+  email: user.email,
+  role: user.role,
+  ...(user.profilePhoto && { profilePhoto: user.profilePhoto }),
+});
 
 export const resendOtpUtil = async (email: string) => {
-    const user = await insecurePrisma.user.findFirstOrThrow({
-        where: {
-            email: email,
-        },
+  const user = await insecurePrisma.user.findFirstOrThrow({
+    where: {
+      email: email,
+    },
+  });
+
+  if (user.isDeleted) {
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      'Account has been deleted. Please contact support to reactivate your account',
+    );
+  }
+
+  if (user.status === 'BLOCKED') {
+    throw new AppError(httpStatus.FORBIDDEN, 'User is blocked');
+  }
+  if (user.isEmailVerified) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Already verified');
+  }
+
+  const otp = generateOTP();
+
+  await prisma.$transaction(async tx => {
+    const user = await tx.user.update({
+      where: { email: email },
+      data: {
+        otp,
+        otpExpiry: otpExpiryTime(),
+        otpFor: 'USER_VERIFICATION',
+      },
     });
 
-    if (user.isDeleted) {
-        throw new AppError(httpStatus.NOT_FOUND, 'Account has been deleted. Please contact support to reactivate your account');
-    }
+    sendOtp({ email: user.email, otp });
 
-    if (user.status === 'BLOCKED') {
-        throw new AppError(httpStatus.FORBIDDEN, 'User is blocked');
-    }
-    if (user.isEmailVerified) {
-        throw new AppError(httpStatus.BAD_REQUEST, 'Already verified')
-    }
+    return {
+      otp,
+      message: 'Verify Otp has sent to your email',
+    };
+  });
 
-    // if (user.otp && user.otpExpiry && new Date(user.otpExpiry).getTime() > Date.now()) {
-    //   const message = getOtpStatusMessage(user.otpExpiry);
-    //   throw new AppError(httpStatus.CONFLICT, message)
-    // }
+  return {
+    message: 'Verification otp sent successfully. Please check your email.',
+    otp,
+  };
+};
 
+export const createSessionUtil = async (
+  userData: User,
+  req: Request,
+  res: Response,
+) => {
+  const { sid, session } = await createSession({
+    userId: userData.id,
+    req,
+  });
+  setSessionCookie(res, sid, session.createdAt);
 
-    const otp = generateOTP();
+  // TOKEN-BASED AUTH remnant:
+  // const result = await generateRefreshToken(userData.email, userData);
+  // sendResponse(res, { statusCode: httpStatus.OK, message: 'User logged in successfully', data: result });
 
-    const updatedUser = await prisma.$transaction(async (tx) => {
-        const user = await tx.user.update({
-            where: { email: email },
-            data: {
-                otp,
-                otpExpiry: otpExpiryTime(),
-                otpFor: 'USER_VERIFICATION',
-            },
-        });
-
-        sendOtp({ email: user.email, otp });
-
-        return {
-            otp,
-            message: 'Verify Otp has sent to your email'
-        };
-    });
-
-
-    return { message: 'Verification otp sent successfully. Please check your email.', otp, };
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'User logged in successfully',
+    data: toAuthUser(userData),
+  });
 };

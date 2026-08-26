@@ -1,105 +1,127 @@
 import { NextFunction, Request, Response } from 'express';
 import httpStatus from 'http-status';
-import { Secret } from 'jsonwebtoken';
+import { UserRoleEnum } from '@prisma/client';
 import config from '../../config';
 import AppError from '../errors/AppError';
-import { verifyToken } from '../utils/verifyToken';
-import { UserRoleEnum } from '@prisma/client';
+import { AuthUser } from '../interface';
+import { clearAuthCookies } from '../utils/cookieOptions';
+import { getValidSession, touchSession } from '../utils/sessions';
 import { insecurePrisma } from '../utils/prisma';
 
-type TupleHasDuplicate<T extends readonly unknown[]> =
-  T extends [infer F, ...infer R]
+type TupleHasDuplicate<T extends readonly unknown[]> = T extends [
+  infer F,
+  ...infer R,
+]
   ? F extends R[number]
-  ? true
-  : TupleHasDuplicate<R>
+    ? true
+    : TupleHasDuplicate<R>
   : false;
 
 type NoDuplicates<T extends readonly unknown[]> =
   TupleHasDuplicate<T> extends true ? never : T;
 
-const auth = <T extends readonly (UserRoleEnum | 'ANY' | 'OPTIONAL' | 'CHECK_SUBSCRIPTION' )[]>(
+const toAuthUser = (user: {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: UserRoleEnum;
+  profilePhoto: string | null;
+}): AuthUser => ({
+  id: user.id,
+  name: `${user.firstName} ${user.lastName}`,
+  email: user.email,
+  role: user.role,
+  ...(user.profilePhoto && { profilePhoto: user.profilePhoto }),
+});
+
+const auth = <
+  T extends readonly (
+    | UserRoleEnum
+    | 'ANY'
+    | 'OPTIONAL'
+    | 'CHECK_SUBSCRIPTION'
+  )[],
+>(
   ...roles: NoDuplicates<T> extends never ? never : T
 ) => {
   const doesCheckSubscription = roles.includes('CHECK_SUBSCRIPTION');
-  return async (req: Request, _res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const isOptional = roles.includes('OPTIONAL');
+
     try {
-      const token = req.headers.authorization;
-      if (!token) {
-        if (roles.includes('OPTIONAL')) {
+      const sid = req.cookies?.[config.session.cookie_name] as
+        | string
+        | undefined;
+      const session = await getValidSession(sid);
+
+      if (!session) {
+        if (isOptional) {
           next();
           return;
         }
+        clearAuthCookies(res);
         throw new AppError(httpStatus.UNAUTHORIZED, 'You are not authorized!');
       }
 
-      const verifyUserToken = verifyToken(
-        token,
-        config.jwt.access_secret as Secret,
-      );
+      const user = session.user;
 
-      // Check user is exist
-      const user = await insecurePrisma.user.findUniqueOrThrow({
-        where: {
-          id: verifyUserToken.id,
-        },
-        include: {
-          ...(doesCheckSubscription && {
-            payments: {
-              where: {
-                paymentType: 'SUBSCRIPTION',
-                paymentStatus: 'SUCCESS'
-              },
-              select: {
-                id: true,
-                paymentStatus: true,
-                subscriptionPackageId: true,
-                endAt: true
-              }
-            }
-          })
-        },
-      });
-
-      if (!user) {
-        throw new AppError(httpStatus.UNAUTHORIZED, 'You are not authorized!');
-      }
       if (user.isDeleted) {
-        throw new AppError(httpStatus.NOT_FOUND, 'Account has been deleted. Please contact support to reactivate your account');
+        clearAuthCookies(res);
+        throw new AppError(
+          httpStatus.NOT_FOUND,
+          'Account has been deleted. Please contact support to reactivate your account',
+        );
       }
       if (!user.isEmailVerified) {
+        clearAuthCookies(res);
         throw new AppError(httpStatus.UNAUTHORIZED, 'You are not verified!');
       }
-
-
-
       if (user.status === 'BLOCKED') {
+        clearAuthCookies(res);
         throw new AppError(httpStatus.UNAUTHORIZED, 'You are Blocked!');
       }
-      const payments = user.payments;
+
       if (doesCheckSubscription && !roles.includes('SUPERADMIN')) {
-        const isVerified = new Date(payments?.filter((item: { paymentStatus: string; }) => item.paymentStatus === 'SUCCESS')[0]?.endAt || '') >= new Date();
+        const payments = await insecurePrisma.payment.findMany({
+          where: {
+            userId: user.id,
+            paymentType: 'SUBSCRIPTION',
+            paymentStatus: 'SUCCESS',
+          },
+          select: {
+            paymentStatus: true,
+            endAt: true,
+          },
+        });
+        const isVerified =
+          new Date(
+            payments?.filter(item => item.paymentStatus === 'SUCCESS')[0]
+              ?.endAt || '',
+          ) >= new Date();
         if (!isVerified) {
           throw new AppError(
             httpStatus.FORBIDDEN,
-            'Your subscription has expired or is not active. Please subscribe to continue accessing this feature.'
+            'Your subscription has expired or is not active. Please subscribe to continue accessing this feature.',
           );
         }
       }
 
-      if (user?.profilePhoto) {
-        verifyUserToken.profilePhoto = user?.profilePhoto
-      }
+      await touchSession(session, res, sid as string);
+      req.user = toAuthUser(user);
 
-      req.user = verifyUserToken;
       if (roles.includes('ANY')) {
         next();
       } else {
-        if (roles.length && !roles.includes(verifyUserToken.role)) {
+        if (
+          roles.length &&
+          !roles.includes(user.role) &&
+          !roles.includes('OPTIONAL')
+        ) {
           throw new AppError(httpStatus.FORBIDDEN, 'Forbidden!');
         }
-        next()
+        next();
       }
-
     } catch (error) {
       next(error);
     }

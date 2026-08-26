@@ -1,3 +1,7 @@
+/**
+ * TOKEN-BASED AUTH remnant.
+ * Not used by default (this module is unmounted). Session cookies are the active auth path.
+ */
 import z from "zod";
 
 const loginUser = z.object({

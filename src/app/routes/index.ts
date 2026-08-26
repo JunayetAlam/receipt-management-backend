@@ -9,6 +9,7 @@ import { PaymentRoutes } from '../modules/Payment/payment.route';
 const router = express.Router();
 
 const moduleRoutes = [
+  // TOKEN-BASED AUTH remnant — link-based JWT verification. Session AuthByOtp is the default.
   // {
   //   path: '/auth',
   //   route: AuthRouters,
