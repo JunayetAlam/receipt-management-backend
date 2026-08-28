@@ -6,11 +6,6 @@ import { AuthByOtpRouters } from '../modules/AuthByOtp/auth.routes';
 const router = express.Router();
 
 const moduleRoutes = [
-  // TOKEN-BASED AUTH remnant — link-based JWT verification. Session AuthByOtp is the default.
-  // {
-  //   path: '/auth',
-  //   route: AuthRouters,
-  // },
   {
     path: '/auth',
     route: AuthByOtpRouters,

@@ -43,7 +43,10 @@ export const resendOtpUtil = async (email: string) => {
   }
 
   if (user.status === 'BLOCKED') {
-    throw new AppError(httpStatus.FORBIDDEN, 'User is blocked');
+    throw new AppError(httpStatus.FORBIDDEN, 'You are Blocked!');
+  }
+  if (user.status === 'INACTIVE') {
+    throw new AppError(httpStatus.FORBIDDEN, 'Your account is inactive.');
   }
   if (user.isEmailVerified) {
     throw new AppError(httpStatus.BAD_REQUEST, 'Already verified');
@@ -82,10 +85,6 @@ export const createSessionUtil = async (
     req,
   });
   setSessionCookie(res, sid, session.createdAt);
-
-  // TOKEN-BASED AUTH remnant:
-  // const result = await generateRefreshToken(userData.email, userData);
-  // sendResponse(res, { statusCode: httpStatus.OK, message: 'User logged in successfully', data: result });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

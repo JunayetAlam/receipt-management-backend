@@ -70,6 +70,20 @@ const auth = <
         clearAuthCookies(res);
         throw new AppError(httpStatus.UNAUTHORIZED, 'You are not verified!');
       }
+      if (user.status === 'PENDING') {
+        clearAuthCookies(res);
+        throw new AppError(
+          httpStatus.UNAUTHORIZED,
+          'Your account is pending admin approval.',
+        );
+      }
+      if (user.status === 'INACTIVE') {
+        clearAuthCookies(res);
+        throw new AppError(
+          httpStatus.UNAUTHORIZED,
+          'Your account is inactive.',
+        );
+      }
       if (user.status === 'BLOCKED') {
         clearAuthCookies(res);
         throw new AppError(httpStatus.UNAUTHORIZED, 'You are Blocked!');

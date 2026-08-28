@@ -23,7 +23,6 @@ const createPrismaClient = (omitUserSecrets: boolean) =>
               otpFor: true,
               passwordResetToken: true,
               passwordResetTokenExpires: true,
-              isEmailVerified: true,
               emailVerificationToken: true,
               emailVerificationTokenExpires: true,
               isAgreeWithTerms: true,

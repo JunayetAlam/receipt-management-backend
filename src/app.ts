@@ -13,12 +13,7 @@ const app: Application = express();
 
 app.use(
   cors({
-    origin: [
-      'http://localhost:3001',
-      'http://localhost:3000',
-      'http://172.252.13.78:3014',
-      'https://bretervin.tamshyah.com',
-    ],
+    origin: [config.base_url_client || 'http://localhost:3000'],
     credentials: true,
   }),
 );

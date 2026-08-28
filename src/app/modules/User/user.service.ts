@@ -1,5 +1,6 @@
+import * as bcrypt from 'bcrypt';
 import httpStatus from 'http-status';
-import { User, UserRoleEnum, UserStatus } from '../../../generated/prisma/client';
+import { UserRoleEnum, UserStatus } from '../../../generated/prisma/client';
 import QueryBuilder from '../../builder/QueryBuilder';
 import { prisma } from '../../utils/prisma';
 import { Request } from 'express';
@@ -7,20 +8,39 @@ import AppError from '../../errors/AppError';
 import catchAsync from '../../utils/catchAsync';
 import sendResponse from '../../utils/sendResponse';
 import { deleteFromMinIO, uploadToMinIO } from '../Upload/uploadToMinio';
-import { destroyAllUserSessions } from '../../utils/sessions';
-import { clearAuthCookies } from '../../utils/cookieOptions';
+import {
+  destroyAllUserSessions,
+  destroyUserSessionById,
+  listUserSessions,
+} from '../../utils/sessions';
+import config from '../../../config';
+import { userSelect } from './user.constant';
+import {
+  assertCanAssignRole,
+  assertCanManageTarget,
+} from './user.policy';
+
+const getTargetUser = async (id: string) => {
+  const target = await prisma.user.findUnique({
+    where: { id },
+  });
+  if (!target) {
+    throw new AppError(httpStatus.NOT_FOUND, 'User not found');
+  }
+  return target;
+};
 
 const getAllUsers = catchAsync(async (req, res) => {
   const user = req.user;
   const query: Record<string, unknown> = req.query;
 
-  if (user.role !== 'SUPERADMIN') {
+  if (query.isDeleted === undefined) {
     query.isDeleted = false;
   }
 
   const usersQuery = new QueryBuilder<typeof prisma.user>(prisma.user, query);
   const result = await usersQuery
-    .search(['firstName', 'lastName', 'email'])
+    .search(['firstName', 'lastName', 'email', 'phoneNumber'])
     .filter()
     .sort()
     .customFields({
@@ -28,10 +48,14 @@ const getAllUsers = catchAsync(async (req, res) => {
       firstName: true,
       lastName: true,
       email: true,
+      phoneNumber: true,
       role: true,
+      status: true,
       profilePhoto: true,
-      loginWay: true,
-      ...(user.role === 'SUPERADMIN' && { isDeleted: true, createdAt: true, updatedAt: true, status: true, }),
+      isEmailVerified: true,
+      createdAt: true,
+      updatedAt: true,
+      ...(user.role === 'SUPERADMIN' && { isDeleted: true }),
     })
     .exclude()
     .paginate()
@@ -40,7 +64,74 @@ const getAllUsers = catchAsync(async (req, res) => {
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Users retrieved successfully',
-    ...result
+    ...result,
+  });
+});
+
+const createUser = catchAsync(async (req, res) => {
+  const actor = req.user;
+  const payload = req.body;
+  const role = (payload.role as UserRoleEnum) || UserRoleEnum.CASHIER;
+
+  assertCanAssignRole(actor, role);
+
+  const existingUser = await prisma.user.findFirst({
+    where: {
+      OR: [{ email: payload.email }, { phoneNumber: payload.phoneNumber }],
+    },
+    select: {
+      id: true,
+      email: true,
+      phoneNumber: true,
+      isDeleted: true,
+    },
+  });
+
+  if (existingUser) {
+    if (existingUser.email === payload.email) {
+      if (existingUser.isDeleted) {
+        throw new AppError(
+          httpStatus.CONFLICT,
+          'User already exists with the email and its deleted. Please contact support to reactivate your account',
+        );
+      }
+      throw new AppError(
+        httpStatus.CONFLICT,
+        'User already exists with the email',
+      );
+    }
+    throw new AppError(
+      httpStatus.CONFLICT,
+      'User already exists with the phone number',
+    );
+  }
+
+  const hashedPassword = await bcrypt.hash(
+    payload.password,
+    Number(config.bcrypt_salt_rounds) || 12,
+  );
+
+  const result = await prisma.user.create({
+    data: {
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      phoneNumber: payload.phoneNumber,
+      password: hashedPassword,
+      role,
+      status: UserStatus.ACTIVE,
+      isAgreeWithTerms: true,
+      isEmailVerified: true,
+      createdById: actor.id,
+      updatedById: actor.id,
+    },
+    select: userSelect,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    message: 'User created successfully',
+    data: result,
   });
 });
 
@@ -51,6 +142,7 @@ const getMyProfile = catchAsync(async (req, res) => {
     where: {
       id: id,
     },
+    select: userSelect,
   });
 
   sendResponse(res, {
@@ -67,18 +159,9 @@ const getUserDetails = catchAsync(async (req, res) => {
   const result = await prisma.user.findUniqueOrThrow({
     where: {
       id,
-      ...(user.role !== 'SUPERADMIN' && { isDeleted: false })
+      ...(user.role !== 'SUPERADMIN' && { isDeleted: false }),
     },
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-      role: true,
-      profilePhoto: true,
-      loginWay: true,
-      ...(user.role === 'SUPERADMIN' && { isDeleted: true, createdAt: true, updatedAt: true, status: true, }),
-    },
+    select: userSelect,
   });
 
   sendResponse(res, {
@@ -95,9 +178,13 @@ const updateMyProfile = catchAsync(async (req: Request, res) => {
 
   const result = await prisma.user.update({
     where: {
-      id
+      id,
     },
-    data: payload
+    data: {
+      ...payload,
+      updatedById: id,
+    },
+    select: userSelect,
   });
 
   sendResponse(res, {
@@ -116,11 +203,13 @@ const updateProfileImage = catchAsync(async (req: Request, res) => {
     const location = await uploadToMinIO(file);
     const result = await prisma.user.update({
       where: {
-        id
+        id,
       },
       data: {
-        profilePhoto: location
-      }
+        profilePhoto: location,
+        updatedById: id,
+      },
+      select: userSelect,
     });
 
     if (previousImg) {
@@ -140,17 +229,24 @@ const updateProfileImage = catchAsync(async (req: Request, res) => {
   throw new AppError(httpStatus.NOT_FOUND, 'Please provide image');
 });
 
-const updateUserRoleStatus = catchAsync(async (req, res) => {
+const updateUserRole = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const role = req.body.role;
+  const role = req.body.role as UserRoleEnum;
+  const actor = req.user;
+  const target = await getTargetUser(id);
+
+  assertCanManageTarget(actor, target);
+  assertCanAssignRole(actor, role);
 
   const result = await prisma.user.update({
     where: {
-      id: id,
+      id,
     },
     data: {
-      role: role
+      role,
+      updatedById: actor.id,
     },
+    select: userSelect,
   });
 
   sendResponse(res, {
@@ -162,23 +258,28 @@ const updateUserRoleStatus = catchAsync(async (req, res) => {
 
 const updateUserStatus = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const status = req.body.status;
+  const status = req.body.status as UserStatus;
+  const actor = req.user;
+  const target = await getTargetUser(id);
+
+  assertCanManageTarget(actor, target);
 
   const result = await prisma.user.update({
     where: {
-      id
+      id,
     },
     data: {
-      status
+      status,
+      updatedById: actor.id,
     },
     select: {
       id: true,
       status: true,
-      role: true
+      role: true,
     },
   });
 
-  if (status === UserStatus.BLOCKED) {
+  if (status === UserStatus.BLOCKED || status === UserStatus.INACTIVE) {
     await destroyAllUserSessions(id);
   }
 
@@ -189,44 +290,49 @@ const updateUserStatus = catchAsync(async (req, res) => {
   });
 });
 
-const deleteMyProfileFromDB = catchAsync(async (req, res) => {
-  const id = req.user.id;
+const deleteUser = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+  const target = await getTargetUser(id);
 
-  await prisma.user.update({
-    where: {
-      id
-    },
+  assertCanManageTarget(actor, target);
+
+  if (target.isDeleted) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'User is already deleted');
+  }
+
+  const result = await prisma.user.update({
+    where: { id },
     data: {
       isDeleted: true,
-      isEmailVerified: false,
-      emailVerificationToken: null,
-      emailVerificationTokenExpires: null,
-      otp: null,
-      otpFor: null,
-      otpExpiry: null,
-      passwordResetToken: null,
-      passwordResetTokenExpires: null,
-    }
+      updatedById: actor.id,
+    },
+    select: userSelect,
   });
 
   await destroyAllUserSessions(id);
-  clearAuthCookies(res);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
-    message: 'Account deleted successfully',
-    data: { message: 'Account deleted successfully' },
+    message: 'User deleted successfully',
+    data: result,
   });
 });
 
 const undeletedUser = catchAsync(async (req, res) => {
   const { id } = req.params;
+  const actor = req.user;
+  const target = await getTargetUser(id);
+
+  assertCanManageTarget(actor, target);
 
   const result = await prisma.user.update({
     where: { id },
     data: {
       isDeleted: false,
-    }
+      updatedById: actor.id,
+    },
+    select: userSelect,
   });
 
   sendResponse(res, {
@@ -236,14 +342,69 @@ const undeletedUser = catchAsync(async (req, res) => {
   });
 });
 
+const logoutUserSessions = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+  const target = await getTargetUser(id);
+
+  assertCanManageTarget(actor, target);
+
+  await destroyAllUserSessions(id);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'User logged out from all devices',
+    data: { id },
+  });
+});
+
+const getUserDevices = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+  const target = await getTargetUser(id);
+
+  assertCanManageTarget(actor, target);
+
+  const sessions = await listUserSessions(id);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Logged in devices retrieved successfully',
+    data: sessions.map(({ tokenHash, ...device }) => device),
+  });
+});
+
+const revokeUserDevice = catchAsync(async (req, res) => {
+  const { id, sessionId } = req.params;
+  const actor = req.user;
+  const target = await getTargetUser(id);
+
+  assertCanManageTarget(actor, target);
+
+  const session = await destroyUserSessionById(id, sessionId);
+  if (!session) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Device session not found');
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Device removed successfully',
+    data: { id: session.id },
+  });
+});
+
 export const UserServices = {
   getAllUsers,
+  createUser,
   getMyProfile,
   getUserDetails,
   updateMyProfile,
   updateProfileImage,
-  updateUserRoleStatus,
+  updateUserRole,
   updateUserStatus,
-  deleteMyProfileFromDB,
-  undeletedUser
+  deleteUser,
+  undeletedUser,
+  logoutUserSessions,
+  getUserDevices,
+  revokeUserDevice,
 };

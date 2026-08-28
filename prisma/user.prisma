@@ -5,9 +5,9 @@ model User {
   email       String       @unique
   phoneNumber String?      @unique
   password    String?
-  role        UserRoleEnum @default(USER)
+  role        UserRoleEnum @default(CASHIER)
 
-  status UserStatus @default(ACTIVE)
+  status UserStatus @default(PENDING)
 
   bio      String?
   location String?
@@ -15,10 +15,10 @@ model User {
   isAgreeWithTerms Boolean
   profilePhoto     String?
 
-  otp       String?
-  otpFor    OTPFor?
-  otpExpiry DateTime?
-  otpAttempts Int @default(0)
+  otp         String?
+  otpFor      OTPFor?
+  otpExpiry   DateTime?
+  otpAttempts Int       @default(0)
 
   passwordResetToken        String?
   passwordResetTokenExpires DateTime?
@@ -33,10 +33,19 @@ model User {
   firebaseUid      String?
   firebaseProvider FirebaseProvider?
 
-  sessions  Session[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdById String?
+  updatedById String?
+  createdBy   User?   @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy   User?   @relation("UserUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdUsers User[] @relation("UserCreatedBy")
+  updatedUsers User[] @relation("UserUpdatedBy")
 
+  sessions  Session[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([createdById])
+  @@index([updatedById])
   @@map("users")
 }
 
@@ -47,11 +56,13 @@ enum OTPFor {
 }
 
 enum UserRoleEnum {
-  USER
   SUPERADMIN
+  ADMIN
+  CASHIER
 }
 
 enum UserStatus {
+  PENDING
   ACTIVE
   INACTIVE
   BLOCKED

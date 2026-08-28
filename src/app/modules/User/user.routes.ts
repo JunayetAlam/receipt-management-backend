@@ -7,10 +7,14 @@ import { UserServices } from './user.service';
 
 const router = express.Router();
 
-router.get('/', auth('SUPERADMIN'), UserServices.getAllUsers);
+router.get('/', auth('SUPERADMIN', 'ADMIN'), UserServices.getAllUsers);
+router.post(
+  '/',
+  auth('SUPERADMIN', 'ADMIN'),
+  validateRequest.body(userValidation.createUser),
+  UserServices.createUser,
+);
 router.get('/me', auth('ANY'), UserServices.getMyProfile);
-
-router.get('/:id', auth('ANY'), UserServices.getUserDetails);
 
 router.put(
   '/update-profile',
@@ -27,30 +31,45 @@ router.put(
 );
 
 router.put(
-  '/user-role/:id',
-  auth('SUPERADMIN'),
-  validateRequest.body(userValidation.updateUserRoleSchema),
-  UserServices.updateUserRoleStatus,
+  '/undelete-user/:id',
+  auth('SUPERADMIN', 'ADMIN'),
+  UserServices.undeletedUser,
+);
+
+router.get(
+  '/:id/devices',
+  auth('SUPERADMIN', 'ADMIN'),
+  UserServices.getUserDevices,
+);
+
+router.delete(
+  '/:id/devices/:sessionId',
+  auth('SUPERADMIN', 'ADMIN'),
+  UserServices.revokeUserDevice,
+);
+
+router.post(
+  '/:id/logout',
+  auth('SUPERADMIN', 'ADMIN'),
+  UserServices.logoutUserSessions,
 );
 
 router.put(
-  '/user-status/:id',
+  '/:id/role',
   auth('SUPERADMIN'),
+  validateRequest.body(userValidation.updateUserRoleSchema),
+  UserServices.updateUserRole,
+);
+
+router.put(
+  '/:id/status',
+  auth('SUPERADMIN', 'ADMIN'),
   validateRequest.body(userValidation.updateUserStatus),
   UserServices.updateUserStatus,
 );
 
+router.delete('/:id', auth('SUPERADMIN', 'ADMIN'), UserServices.deleteUser);
 
-router.delete(
-  '/delete-my-profile',
-  auth('USER'),
-  UserServices.deleteMyProfileFromDB,
-);
-
-router.put(
-  '/undelete-user/:id',
-  auth('SUPERADMIN'),
-  UserServices.undeletedUser,
-);
+router.get('/:id', auth('SUPERADMIN', 'ADMIN'), UserServices.getUserDetails);
 
 export const UserRouters = router;

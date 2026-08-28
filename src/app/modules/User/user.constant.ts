@@ -3,10 +3,18 @@ export const userSelect = {
   firstName: true,
   lastName: true,
   email: true,
+  phoneNumber: true,
   role: true,
   status: true,
+  profilePhoto: true,
+  bio: true,
+  location: true,
   isEmailVerified: true,
+  isDeleted: true,
   createdAt: true,
+  updatedAt: true,
+  createdById: true,
+  updatedById: true,
 };
 
 export const verifyEmailHTML = (link: string) => {

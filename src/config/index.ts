@@ -73,12 +73,6 @@ export default {
     web_app_id: process.env.FIREBASE_WEB_APP_ID,
     web_measurement_id: process.env.FIREBASE_WEB_MEASUREMENT_ID,
   },
-  do_space: {
-    endpoints: process.env.DO_SPACE_ENDPOINT,
-    access_key: process.env.DO_SPACE_ACCESS_KEY,
-    secret_key: process.env.DO_SPACE_SECRET_KEY,
-    bucket: process.env.DO_SPACE_BUCKET,
-  },
   cloudinary: {
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,

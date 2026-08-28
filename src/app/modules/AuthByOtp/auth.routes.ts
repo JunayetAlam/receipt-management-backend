@@ -28,9 +28,6 @@ router.post(
   AuthServices.registerUser,
 );
 
-// TOKEN-BASED AUTH remnant — JWT refresh. Session idle/absolute TTL replaces this.
-// router.post('/refresh-token', auth('ANY'), AuthServices.refreshToken);
-
 router.post(
   '/verify-email',
   authLimiter,

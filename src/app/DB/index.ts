@@ -10,6 +10,7 @@ const superAdminData = {
   password: '123456',
   phoneNumber: '01821558090',
   role: UserRoleEnum.SUPERADMIN,
+  status: 'ACTIVE' as const,
   isAgreeWithTerms: true,
   isEmailVerified: true,
 };

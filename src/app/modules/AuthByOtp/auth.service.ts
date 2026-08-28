@@ -9,10 +9,9 @@ import { verifyOtp } from '../../utils/verifyOtp';
 import { sendOtp } from '../../utils/sendOtp';
 import catchAsync from '../../utils/catchAsync';
 import sendResponse from '../../utils/sendResponse';
-import { createSessionUtil, resendOtpUtil, toAuthUser } from './auth.utils';
-import { clearAuthCookies, setSessionCookie } from '../../utils/cookieOptions';
+import { createSessionUtil, resendOtpUtil } from './auth.utils';
+import { clearAuthCookies } from '../../utils/cookieOptions';
 import {
-  createSession,
   destroyAllUserSessions,
   destroySession,
   destroyUserSessionById,
@@ -20,13 +19,13 @@ import {
   listUserSessions,
 } from '../../utils/sessions';
 import { firebaseAuth } from '../../utils/firebase';
-import { FirebaseProvider, User } from '../../../generated/prisma/client';
-
-// TOKEN-BASED AUTH remnant:
-// import { Secret, SignOptions, JwtPayload } from 'jsonwebtoken';
-// import jwt from 'jsonwebtoken';
-// import { generateToken } from '../../utils/token/generateToken';
-// import { generateRefreshToken } from '../../utils/token/generateRefreshToken';
+import {
+  FirebaseProvider,
+  User,
+  UserRoleEnum,
+  UserStatus,
+} from '../../../generated/prisma/client';
+import { accountAccessMessage } from '../User/user.policy';
 
 const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
 
@@ -67,21 +66,17 @@ const loginWithFirebase = catchAsync(async (req, res) => {
   });
 
   if (user) {
-    if (user.status === 'BLOCKED') {
-      throw new AppError(httpStatus.FORBIDDEN, 'Account has been blocked');
-    }
     if (user.isDeleted) {
       throw new AppError(
         httpStatus.NOT_FOUND,
         'Account has been deleted. Please contact support to reactivate your account',
       );
-    } else {
-      if (user.loginWay === 'EMAIL') {
-        throw new AppError(
-          httpStatus.BAD_REQUEST,
-          'Email already in use with different login method',
-        );
-      }
+    }
+    if (user.loginWay === 'EMAIL') {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        'Email already in use with different login method',
+      );
     }
   } else {
     user = await prisma.user.create({
@@ -95,9 +90,17 @@ const loginWithFirebase = catchAsync(async (req, res) => {
         firebaseProvider: provider,
         firebaseUid: uid,
         loginWay: 'FIREBASE',
+        role: UserRoleEnum.CASHIER,
+        status: UserStatus.PENDING,
       },
     });
   }
+
+  const accessMessage = accountAccessMessage(user.status);
+  if (accessMessage) {
+    throw new AppError(httpStatus.FORBIDDEN, accessMessage);
+  }
+
   await createSessionUtil(user as User, req, res);
 });
 
@@ -113,12 +116,7 @@ const loginUser = catchAsync(async (req, res) => {
     },
   });
 
-  if (
-    !userData ||
-    userData.isDeleted ||
-    userData.status === 'BLOCKED' ||
-    userData.loginWay === 'FIREBASE'
-  ) {
+  if (!userData || userData.isDeleted || userData.loginWay === 'FIREBASE') {
     throw new AppError(httpStatus.UNAUTHORIZED, INVALID_CREDENTIALS);
   }
 
@@ -143,22 +141,21 @@ const loginUser = catchAsync(async (req, res) => {
     return;
   }
 
-  // TOKEN-BASED AUTH remnant:
-  // const result = await generateRefreshToken(userData.email, userData);
-  // sendResponse(res, { statusCode: httpStatus.OK, message: 'User logged in successfully', data: result });
+  const accessMessage = accountAccessMessage(userData.status);
+  if (accessMessage) {
+    throw new AppError(httpStatus.FORBIDDEN, accessMessage);
+  }
 
   await createSessionUtil(userData, req, res);
 });
 
 const registerUser = catchAsync(async (req, res) => {
   const payload = req.body;
-  if (payload.role == 'SUPERADMIN') {
-    throw new AppError(
-      httpStatus.NOT_ACCEPTABLE,
-      'User can only pass User and Provider',
-    );
-  }
-  const hashedPassword: string = await bcrypt.hash(payload.password, 12);
+  delete payload.role;
+  const hashedPassword: string = await bcrypt.hash(
+    payload.password,
+    Number(config.bcrypt_salt_rounds) || 12,
+  );
 
   const existingUser = await prisma.user.findFirst({
     where: {
@@ -192,21 +189,22 @@ const registerUser = catchAsync(async (req, res) => {
   }
 
   const otp = generateOTP();
-  const userData = {
-    ...payload,
-    password: hashedPassword,
-    otp: hashSid(otp),
-    otpExpiry: otpExpiryTime(),
-    otpAttempts: 0,
-  };
 
-  await prisma.$transaction(async tx => {
-    await tx.user.create({
-      data: {
-        ...userData,
-        otpFor: 'USER_VERIFICATION',
-      },
-    });
+  await prisma.user.create({
+    data: {
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      phoneNumber: payload.phoneNumber,
+      password: hashedPassword,
+      isAgreeWithTerms: payload.isAgreeWithTerms,
+      role: UserRoleEnum.CASHIER,
+      status: UserStatus.PENDING,
+      otp: hashSid(otp),
+      otpExpiry: otpExpiryTime(),
+      otpAttempts: 0,
+      otpFor: 'USER_VERIFICATION',
+    },
   });
 
   if (config.env === 'development') {
@@ -214,7 +212,7 @@ const registerUser = catchAsync(async (req, res) => {
   }
 
   try {
-    await sendOtp({ email: userData.email, otp });
+    await sendOtp({ email: payload.email, otp });
   } catch (mailErr) {
     if (config.env === 'development') {
       console.error(
@@ -262,24 +260,14 @@ const verifyEmail = catchAsync(async (req, res) => {
     },
   });
 
-  // TOKEN-BASED AUTH remnant:
-  // const accessToken = await generateToken(
-  //   { id: userData.id, name: userData.firstName + userData.lastName, email: userData.email, role: userData.role },
-  //   config.jwt.access_secret as Secret,
-  //   config.jwt.access_expires_in as SignOptions['expiresIn'],
-  // );
-  // sendResponse(res, { statusCode: httpStatus.OK, message: 'Email verified successfully', data: { ...toAuthUser(userData), accessToken } });
-
-  const { sid, session } = await createSession({
-    userId: userData.id,
-    req,
-  });
-  setSessionCookie(res, sid, session.createdAt);
-
   sendResponse(res, {
     statusCode: httpStatus.OK,
-    message: 'Email verified successfully',
-    data: toAuthUser(userData),
+    message:
+      'Email verified successfully. Your account is pending admin approval.',
+    data: {
+      pendingApproval: true,
+      email: userData.email,
+    },
   });
 });
 
@@ -402,13 +390,6 @@ const verifyForgotPassOtp = catchAsync(async (req, res) => {
   await verifyOtp(payload, 'FORGOT_PASSWORD');
   const resetToken = randomBytes(32).toString('hex');
 
-  // TOKEN-BASED AUTH remnant:
-  // const resetToken = generateToken(
-  //   { id: userData.id, name: userData.firstName + userData.lastName, email: userData.email, role: userData.role },
-  //   config.jwt.access_secret as Secret,
-  //   '600s',
-  // );
-
   await prisma.user.update({
     where: {
       email: payload.email,
@@ -449,11 +430,6 @@ const resetPassword = catchAsync(async (req, res) => {
       'Email already in use with different login method',
     );
   }
-
-  // TOKEN-BASED AUTH remnant — reset token previously came from Authorization header JWT:
-  // const token = req.headers.authorization as string;
-  // if (token !== userData.passwordResetToken) throw new AppError(httpStatus.FORBIDDEN, 'Invalid token');
-  // const decoded = jwt.verify(token, config.jwt.access_secret as string) as JwtPayload;
 
   if (
     !userData.passwordResetToken ||
@@ -547,16 +523,6 @@ const removeDevice = catchAsync(async (req, res) => {
   });
 });
 
-// TOKEN-BASED AUTH remnant:
-// const refreshToken = catchAsync(async (req, res) => {
-//   const result = await generateRefreshToken(req.user.email);
-//   sendResponse(res, {
-//     statusCode: httpStatus.OK,
-//     message: 'Token Refresh Successfully',
-//     data: result,
-//   });
-// });
-
 export const AuthServices = {
   loginWithFirebase,
   loginUser,
@@ -570,5 +536,4 @@ export const AuthServices = {
   logoutUser,
   getLoggedInDevices,
   removeDevice,
-  // refreshToken,
 };

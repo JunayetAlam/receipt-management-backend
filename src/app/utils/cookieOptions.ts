@@ -30,25 +30,6 @@ export const setSessionCookie = (
   });
 };
 
-/** TOKEN-BASED AUTH remnant — unused. Restore if you switch back to JWT cookies. */
-export const setAuthCookies = (
-  res: Response,
-  tokens: { accessToken: string; refreshToken?: string },
-) => {
-  res.cookie('accessToken', tokens.accessToken, {
-    ...baseCookieOptions,
-    maxAge: 1000 * 60 * 60 * 24,
-  });
-  if (tokens.refreshToken) {
-    res.cookie('refreshToken', tokens.refreshToken, {
-      ...baseCookieOptions,
-      maxAge: 1000 * 60 * 60 * 24 * 30,
-    });
-  }
-};
-
 export const clearAuthCookies = (res: Response) => {
   res.clearCookie(config.session.cookie_name, baseCookieOptions);
-  res.clearCookie('accessToken', baseCookieOptions);
-  res.clearCookie('refreshToken', baseCookieOptions);
 };
