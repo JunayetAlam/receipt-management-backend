@@ -3,6 +3,11 @@ import { UserRouters } from '../modules/User/user.routes';
 import { AssetRouters } from '../modules/Asset/asset.route';
 import { AuthByOtpRouters } from '../modules/AuthByOtp/auth.routes';
 
+import { NotificationRouters } from '../modules/Notification/notification.routes';
+import { ActivityLogRouters } from '../modules/ActivityLog/activityLog.routes';
+import { ProductRouters } from '../modules/Product/product.routes';
+import { CustomerRouters } from '../modules/Customer/customer.routes';
+
 const router = express.Router();
 
 const moduleRoutes = [
@@ -15,8 +20,24 @@ const moduleRoutes = [
     route: UserRouters,
   },
   {
+    path: '/customers',
+    route: CustomerRouters,
+  },
+  {
+    path: '/products',
+    route: ProductRouters,
+  },
+  {
     path: '/assets',
     route: AssetRouters,
+  },
+  {
+    path: '/notifications',
+    route: NotificationRouters,
+  },
+  {
+    path: '/activity-logs',
+    route: ActivityLogRouters,
   },
 ];
 

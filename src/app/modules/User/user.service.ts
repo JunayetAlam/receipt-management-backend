@@ -1,6 +1,10 @@
 import * as bcrypt from 'bcrypt';
 import httpStatus from 'http-status';
-import { UserRoleEnum, UserStatus } from '../../../generated/prisma/client';
+import {
+  NotificationType,
+  UserRoleEnum,
+  UserStatus,
+} from '../../../generated/prisma/client';
 import QueryBuilder from '../../builder/QueryBuilder';
 import { prisma } from '../../utils/prisma';
 import { Request } from 'express';
@@ -19,6 +23,8 @@ import {
   assertCanAssignRole,
   assertCanManageTarget,
 } from './user.policy';
+import { logActivity } from '../../utils/activityLog';
+import { notifyAdmins, sendNotification } from '../../utils/notification';
 
 const getTargetUser = async (id: string) => {
   const target = await prisma.user.findUnique({
@@ -128,6 +134,23 @@ const createUser = catchAsync(async (req, res) => {
     select: userSelect,
   });
 
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_CREATE_USER',
+    entityType: 'USER',
+    entityId: result.id,
+    req,
+    details: { role, email: payload.email },
+  });
+
+  sendNotification({
+    userId: result.id,
+    title: 'Account Created',
+    message: `Your account has been created by administrator with role ${role}.`,
+    type: NotificationType.SUCCESS,
+    link: '/profile',
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     message: 'User created successfully',
@@ -187,6 +210,22 @@ const updateMyProfile = catchAsync(async (req: Request, res) => {
     select: userSelect,
   });
 
+  logActivity({
+    userId: id,
+    action: 'USER_UPDATE_PROFILE',
+    entityType: 'USER',
+    entityId: id,
+    req,
+  });
+
+  sendNotification({
+    userId: id,
+    title: 'Profile Updated',
+    message: 'Your profile details were updated successfully.',
+    type: NotificationType.INFO,
+    link: '/profile',
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'User profile updated successfully',
@@ -218,6 +257,14 @@ const updateProfileImage = catchAsync(async (req: Request, res) => {
 
     req.user.profilePhoto = location;
 
+    logActivity({
+      userId: id,
+      action: 'USER_UPDATE_AVATAR',
+      entityType: 'USER',
+      entityId: id,
+      req,
+    });
+
     sendResponse(res, {
       statusCode: httpStatus.OK,
       message: 'Profile image updated successfully',
@@ -247,6 +294,23 @@ const updateUserRole = catchAsync(async (req, res) => {
       updatedById: actor.id,
     },
     select: userSelect,
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_UPDATE_USER_ROLE',
+    entityType: 'USER',
+    entityId: id,
+    req,
+    details: { previousRole: target.role, newRole: role },
+  });
+
+  sendNotification({
+    userId: id,
+    title: 'Role Updated',
+    message: `Your account role has been updated to ${role} by administrator.`,
+    type: NotificationType.INFO,
+    link: '/profile',
   });
 
   sendResponse(res, {
@@ -283,6 +347,28 @@ const updateUserStatus = catchAsync(async (req, res) => {
     await destroyAllUserSessions(id);
   }
 
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_UPDATE_USER_STATUS',
+    entityType: 'USER',
+    entityId: id,
+    req,
+    details: { previousStatus: target.status, newStatus: status },
+  });
+
+  sendNotification({
+    userId: id,
+    title: 'Account Status Updated',
+    message: `Your account status is now ${status}.`,
+    type:
+      status === UserStatus.ACTIVE
+        ? NotificationType.SUCCESS
+        : status === UserStatus.BLOCKED
+          ? NotificationType.ERROR
+          : NotificationType.WARNING,
+    link: '/profile',
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'User status updated successfully',
@@ -312,6 +398,22 @@ const deleteUser = catchAsync(async (req, res) => {
 
   await destroyAllUserSessions(id);
 
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_DELETE_USER',
+    entityType: 'USER',
+    entityId: id,
+    req,
+  });
+
+  sendNotification({
+    userId: id,
+    title: 'Account Deactivated',
+    message: 'Your account has been deleted by an administrator.',
+    type: NotificationType.ERROR,
+    link: '/profile',
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'User deleted successfully',
@@ -335,6 +437,22 @@ const undeletedUser = catchAsync(async (req, res) => {
     select: userSelect,
   });
 
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_REACTIVATE_USER',
+    entityType: 'USER',
+    entityId: id,
+    req,
+  });
+
+  sendNotification({
+    userId: id,
+    title: 'Account Reactivated',
+    message: 'Your account has been reactivated. You can now log in.',
+    type: NotificationType.SUCCESS,
+    link: '/profile',
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Account reactivated successfully',
@@ -350,6 +468,22 @@ const logoutUserSessions = catchAsync(async (req, res) => {
   assertCanManageTarget(actor, target);
 
   await destroyAllUserSessions(id);
+
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_LOGOUT_USER_SESSIONS',
+    entityType: 'USER',
+    entityId: id,
+    req,
+  });
+
+  sendNotification({
+    userId: id,
+    title: 'Logged Out',
+    message: 'Your account was logged out from all active sessions by an administrator.',
+    type: NotificationType.WARNING,
+    link: '/profile',
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -385,6 +519,14 @@ const revokeUserDevice = catchAsync(async (req, res) => {
   if (!session) {
     throw new AppError(httpStatus.NOT_FOUND, 'Device session not found');
   }
+
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_REVOKE_USER_DEVICE',
+    entityType: 'SESSION',
+    entityId: sessionId,
+    req,
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

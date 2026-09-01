@@ -39,7 +39,16 @@ class QueryBuilder<
   // Filter
   filter() {
     const queryObj = { ...this.query };
-    const excludeFields = ['searchTerm', 'sort', 'limit', 'page', 'fields', 'exclude'];
+    const excludeFields = [
+      'searchTerm',
+      'sort',
+      'sortBy',
+      'sortOrder',
+      'limit',
+      'page',
+      'fields',
+      'exclude',
+    ];
     excludeFields.forEach(field => delete queryObj[field]);
 
     const formattedFilters: Record<string, unknown> = {};
@@ -75,12 +84,21 @@ class QueryBuilder<
 
   // Sorting
   sort() {
-    const sort = (this.query.sort as string)?.split(',') || ['-createdAt'];
-    this.prismaQuery.orderBy = sort.map(field =>
-      field.startsWith('-')
-        ? { [field.slice(1)]: 'desc' }
-        : { [field]: 'asc' }
-    );
+    if (this.query.sortBy) {
+      const field = this.query.sortBy as string;
+      const order =
+        (this.query.sortOrder as string)?.toLowerCase() === 'asc'
+          ? 'asc'
+          : 'desc';
+      this.prismaQuery.orderBy = [{ [field]: order }];
+    } else {
+      const sort = (this.query.sort as string)?.split(',') || ['-createdAt'];
+      this.prismaQuery.orderBy = sort.map(field =>
+        field.startsWith('-')
+          ? { [field.slice(1)]: 'desc' }
+          : { [field]: 'asc' }
+      );
+    }
     return this;
   }
 

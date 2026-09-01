@@ -40,6 +40,23 @@ model User {
   createdUsers User[] @relation("UserCreatedBy")
   updatedUsers User[] @relation("UserUpdatedBy")
 
+  createdCustomers        Customer[] @relation("CustomerCreatedBy")
+  updatedCustomers        Customer[] @relation("CustomerUpdatedBy")
+  deleteRequestedCustomers Customer[] @relation("CustomerDeleteRequestedBy")
+
+  createdProducts        Product[] @relation("ProductCreatedBy")
+  updatedProducts        Product[] @relation("ProductUpdatedBy")
+  deleteRequestedProducts Product[] @relation("ProductDeleteRequestedBy")
+
+  createdReceipts Receipt[] @relation("ReceiptCreatedBy")
+  updatedReceipts Receipt[] @relation("ReceiptUpdatedBy")
+
+  receivedPayments ReceiptPayment[] @relation("ReceiptPaymentCreatedBy")
+
+  activityLogs      ActivityLog[]
+  notifications     Notification[]     @relation("UserNotifications")
+  notificationReads NotificationRead[]
+
   sessions  Session[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt

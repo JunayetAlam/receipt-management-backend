@@ -9,7 +9,9 @@ import { createSession, hashSid } from '../../utils/sessions';
 import { Request, Response } from 'express';
 import { setSessionCookie } from '../../utils/cookieOptions';
 import sendResponse from '../../utils/sendResponse';
-import { User, UserRoleEnum } from '../../../generated/prisma/client';
+import { NotificationType, User, UserRoleEnum } from '../../../generated/prisma/client';
+import { logActivity } from '../../utils/activityLog';
+import { sendNotification } from '../../utils/notification';
 
 type AuthUserSource = {
   id: string;
@@ -85,6 +87,28 @@ export const createSessionUtil = async (
     req,
   });
   setSessionCookie(res, sid, session.createdAt);
+
+  logActivity({
+    userId: userData.id,
+    action: 'USER_LOGIN',
+    entityType: 'USER',
+    entityId: userData.id,
+    req,
+    details: { loginWay: userData.loginWay, role: userData.role },
+  });
+
+  sendNotification({
+    userId: userData.id,
+    title: 'Login Detected',
+    message: `You signed in to your account on ${new Date().toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })}.`,
+    type: NotificationType.INFO,
+    link: '/profile',
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

@@ -1,0 +1,44 @@
+model Product {
+  id                  String      @id @default(uuid())
+  name                String
+  unit                ProductUnit @default(PIECE)
+  sellingPrice        Float
+  buyingPrice         Float?
+  stock               Float       @default(0)
+  description         String?
+  isDeleted           Boolean     @default(false)
+
+  isDeleteRequested   Boolean     @default(false)
+  deleteRequestedById String?
+  deleteRequestedBy   User?       @relation("ProductDeleteRequestedBy", fields: [deleteRequestedById], references: [id], onDelete: SetNull)
+  deleteRequestedAt   DateTime?
+  deleteReason        String?
+
+  createdById         String?
+  updatedById         String?
+  createdBy           User?       @relation("ProductCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy           User?       @relation("ProductUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  receiptItems        ReceiptItem[]
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([name])
+  @@index([isDeleted])
+  @@index([isDeleteRequested])
+  @@index([createdById])
+  @@index([updatedById])
+  @@map("products")
+}
+
+enum ProductUnit {
+  KG
+  LITER
+  PIECE
+  GRAM
+  METER
+  BOX
+  PACKET
+  OTHER
+}

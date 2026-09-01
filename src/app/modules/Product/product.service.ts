@@ -1,0 +1,453 @@
+import httpStatus from 'http-status';
+import catchAsync from '../../utils/catchAsync';
+import sendResponse from '../../utils/sendResponse';
+import { prisma } from '../../utils/prisma';
+import QueryBuilder from '../../builder/QueryBuilder';
+import AppError from '../../errors/AppError';
+import { NotificationType, UserRoleEnum } from '../../../generated/prisma/client';
+import { logActivity } from '../../utils/activityLog';
+import { notifyAdmins, sendNotification } from '../../utils/notification';
+import { productSearchableFields } from './product.constant';
+
+const createProduct = catchAsync(async (req, res) => {
+  const actor = req.user;
+  const payload = req.body;
+
+  const product = await prisma.product.create({
+    data: {
+      name: payload.name,
+      unit: payload.unit,
+      sellingPrice: payload.sellingPrice,
+      buyingPrice: payload.buyingPrice ?? null,
+      stock: payload.stock ?? 0,
+      description: payload.description ?? null,
+      createdById: actor.id,
+      updatedById: actor.id,
+    },
+    include: {
+      createdBy: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+        },
+      },
+    },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'CREATE_PRODUCT',
+    entityType: 'PRODUCT',
+    entityId: product.id,
+    req,
+    details: {
+      name: product.name,
+      sellingPrice: product.sellingPrice,
+      buyingPrice: product.buyingPrice,
+      unit: product.unit,
+      stock: product.stock,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    message: 'Product created successfully',
+    data: product,
+  });
+});
+
+const getAllProducts = catchAsync(async (req, res) => {
+  const actor = req.user;
+  const query: Record<string, unknown> = { ...req.query };
+
+  // For cashiers, default isDeleted to false unless admin requests deleted items
+  if (actor.role === UserRoleEnum.CASHIER || query.isDeleted === undefined) {
+    query.isDeleted = false;
+  } else if (query.isDeleted === 'true') {
+    query.isDeleted = true;
+  } else if (query.isDeleted === 'false') {
+    query.isDeleted = false;
+  }
+
+  if (query.isDeleteRequested === 'true') {
+    query.isDeleteRequested = true;
+  } else if (query.isDeleteRequested === 'false') {
+    query.isDeleteRequested = false;
+  }
+
+  const productsQuery = new QueryBuilder<typeof prisma.product>(
+    prisma.product,
+    query,
+  );
+
+  const result = await productsQuery
+    .search(productSearchableFields)
+    .filter()
+    .sort()
+    .customFields({
+      id: true,
+      name: true,
+      unit: true,
+      sellingPrice: true,
+      buyingPrice: true,
+      stock: true,
+      description: true,
+      isDeleted: true,
+      isDeleteRequested: true,
+      deleteRequestedAt: true,
+      deleteReason: true,
+      createdAt: true,
+      updatedAt: true,
+      createdBy: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+      updatedBy: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+      deleteRequestedBy: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+    })
+    .paginate()
+    .execute();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Products retrieved successfully',
+    ...result,
+  });
+});
+
+const getProductById = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const product = await prisma.product.findUnique({
+    where: { id },
+    include: {
+      createdBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      updatedBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+      deleteRequestedBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+      },
+    },
+  });
+
+  if (!product) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product retrieved successfully',
+    data: product,
+  });
+});
+
+const updateProduct = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+  const payload = req.body;
+
+  const existing = await prisma.product.findUnique({
+    where: { id },
+  });
+
+  if (!existing || existing.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
+  }
+
+  const updatedProduct = await prisma.product.update({
+    where: { id },
+    data: {
+      ...payload,
+      updatedById: actor.id,
+    },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'UPDATE_PRODUCT',
+    entityType: 'PRODUCT',
+    entityId: id,
+    req,
+    details: {
+      name: updatedProduct.name,
+      sellingPrice: updatedProduct.sellingPrice,
+      buyingPrice: updatedProduct.buyingPrice,
+      stock: updatedProduct.stock,
+      unit: updatedProduct.unit,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product updated successfully',
+    data: updatedProduct,
+  });
+});
+
+/**
+ * Delete product handler with multi-role confirmation flow:
+ * - Admin/Superadmin: Soft-deletes immediately (isDeleted: true).
+ * - Cashier: Submits delete request (isDeleteRequested: true) and alerts admins.
+ */
+const deleteProduct = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+  const { reason } = req.body || {};
+
+  const product = await prisma.product.findUnique({
+    where: { id },
+  });
+
+  if (!product || product.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
+  }
+
+  const isAdmin = actor.role === UserRoleEnum.SUPERADMIN || actor.role === UserRoleEnum.ADMIN;
+
+  if (isAdmin) {
+    // Immediate soft delete by Admin
+    const result = await prisma.product.update({
+      where: { id },
+      data: {
+        isDeleted: true,
+        isDeleteRequested: false,
+        updatedById: actor.id,
+      },
+    });
+
+    logActivity({
+      userId: actor.id,
+      action: 'ADMIN_DELETE_PRODUCT',
+      entityType: 'PRODUCT',
+      entityId: id,
+      req,
+      details: { name: product.name },
+    });
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      message: 'Product deleted successfully',
+      data: result,
+    });
+  } else {
+    // Cashier delete request -> Pending Admin Confirmation
+    if (product.isDeleteRequested) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        'Deletion request is already pending admin confirmation',
+      );
+    }
+
+    const result = await prisma.product.update({
+      where: { id },
+      data: {
+        isDeleteRequested: true,
+        deleteRequestedById: actor.id,
+        deleteRequestedAt: new Date(),
+        deleteReason: reason || null,
+        updatedById: actor.id,
+      },
+    });
+
+    logActivity({
+      userId: actor.id,
+      action: 'REQUEST_DELETE_PRODUCT',
+      entityType: 'PRODUCT',
+      entityId: id,
+      req,
+      details: { name: product.name, reason },
+    });
+
+    // Notify all admins about the pending request
+    notifyAdmins({
+      title: 'Product Deletion Requested',
+      message: `${actor.name || 'Cashier'} requested to delete product "${product.name}".`,
+      type: NotificationType.WARNING,
+      link: '/products',
+    });
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      message: 'Product deletion request submitted to admin for confirmation',
+      data: result,
+    });
+  }
+});
+
+/**
+ * Confirm delete request (Admin only)
+ */
+const confirmDeleteProduct = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+
+  const product = await prisma.product.findUnique({
+    where: { id },
+  });
+
+  if (!product || product.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
+  }
+
+  const result = await prisma.product.update({
+    where: { id },
+    data: {
+      isDeleted: true,
+      isDeleteRequested: false,
+      updatedById: actor.id,
+    },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_CONFIRM_DELETE_PRODUCT',
+    entityType: 'PRODUCT',
+    entityId: id,
+    req,
+    details: { name: product.name, requestedBy: product.deleteRequestedById },
+  });
+
+  // Notify the cashier who requested the deletion
+  if (product.deleteRequestedById) {
+    sendNotification({
+      userId: product.deleteRequestedById,
+      title: 'Product Deletion Approved',
+      message: `Your request to delete "${product.name}" was approved by administrator.`,
+      type: NotificationType.SUCCESS,
+      link: '/products',
+    });
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product deletion confirmed successfully',
+    data: result,
+  });
+});
+
+/**
+ * Reject delete request (Admin only)
+ */
+const rejectDeleteProduct = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+
+  const product = await prisma.product.findUnique({
+    where: { id },
+  });
+
+  if (!product || product.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
+  }
+
+  const result = await prisma.product.update({
+    where: { id },
+    data: {
+      isDeleteRequested: false,
+      deleteRequestedById: null,
+      deleteRequestedAt: null,
+      deleteReason: null,
+      updatedById: actor.id,
+    },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_REJECT_DELETE_PRODUCT',
+    entityType: 'PRODUCT',
+    entityId: id,
+    req,
+    details: { name: product.name, requestedBy: product.deleteRequestedById },
+  });
+
+  if (product.deleteRequestedById) {
+    sendNotification({
+      userId: product.deleteRequestedById,
+      title: 'Product Deletion Rejected',
+      message: `Your request to delete "${product.name}" was rejected by administrator.`,
+      type: NotificationType.WARNING,
+      link: '/products',
+    });
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product deletion request rejected',
+    data: result,
+  });
+});
+
+/**
+ * Restore soft-deleted product (Undo - Admin only)
+ */
+const restoreProduct = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+
+  const product = await prisma.product.findUnique({
+    where: { id },
+  });
+
+  if (!product) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
+  }
+
+  if (!product.isDeleted) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Product is not deleted');
+  }
+
+  const result = await prisma.product.update({
+    where: { id },
+    data: {
+      isDeleted: false,
+      isDeleteRequested: false,
+      updatedById: actor.id,
+    },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'ADMIN_RESTORE_PRODUCT',
+    entityType: 'PRODUCT',
+    entityId: id,
+    req,
+    details: { name: product.name },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product restored successfully',
+    data: result,
+  });
+});
+
+export const ProductServices = {
+  createProduct,
+  getAllProducts,
+  getProductById,
+  updateProduct,
+  deleteProduct,
+  confirmDeleteProduct,
+  rejectDeleteProduct,
+  restoreProduct,
+};

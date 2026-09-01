@@ -1,0 +1,84 @@
+model Receipt {
+  id            String        @id @default(uuid())
+  receiptNumber String        @unique
+  customerId    String
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  subTotal      Float         @default(0)
+  discount      Float         @default(0)
+  totalAmount   Float         @default(0)
+  paidAmount    Float         @default(0)
+  dueAmount     Float         @default(0)
+  status        ReceiptStatus @default(PENDING)
+  note          String?
+  isDeleted     Boolean       @default(false)
+
+  createdById   String?
+  updatedById   String?
+  createdBy     User?         @relation("ReceiptCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy     User?         @relation("ReceiptUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  items         ReceiptItem[]
+  payments      ReceiptPayment[]
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([receiptNumber])
+  @@index([customerId])
+  @@index([status])
+  @@index([createdById])
+  @@index([updatedById])
+  @@index([createdAt])
+  @@map("receipts")
+}
+
+model ReceiptItem {
+  id          String      @id @default(uuid())
+  receiptId   String
+  receipt     Receipt     @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  productId   String?
+  product     Product?    @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  productName  String
+  unit         ProductUnit @default(PIECE)
+  sellingPrice Float
+  buyingPrice  Float?
+  quantity     Float
+  discount     Float       @default(0)
+  totalPrice   Float
+
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([receiptId])
+  @@index([productId])
+  @@map("receipt_items")
+}
+
+model ReceiptPayment {
+  id          String   @id @default(uuid())
+  receiptId   String
+  receipt     Receipt  @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  amount      Float
+  note        String?
+
+  createdById String?
+  createdBy   User?    @relation("ReceiptPaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([receiptId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@map("receipt_payments")
+}
+
+enum ReceiptStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}

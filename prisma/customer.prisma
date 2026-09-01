@@ -1,0 +1,32 @@
+model Customer {
+  id                  String    @id @default(uuid())
+  name                String
+  phoneNumber         String    @unique
+  email               String?
+  address             String?
+  isDeleted           Boolean   @default(false)
+
+  isDeleteRequested   Boolean   @default(false)
+  deleteRequestedById String?
+  deleteRequestedBy   User?     @relation("CustomerDeleteRequestedBy", fields: [deleteRequestedById], references: [id], onDelete: SetNull)
+  deleteRequestedAt   DateTime?
+  deleteReason        String?
+
+  createdById         String?
+  updatedById         String?
+  createdBy           User?     @relation("CustomerCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy           User?     @relation("CustomerUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  receipts            Receipt[]
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([phoneNumber])
+  @@index([name])
+  @@index([isDeleted])
+  @@index([isDeleteRequested])
+  @@index([createdById])
+  @@index([updatedById])
+  @@map("customers")
+}

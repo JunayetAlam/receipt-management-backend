@@ -21,11 +21,14 @@ import {
 import { firebaseAuth } from '../../utils/firebase';
 import {
   FirebaseProvider,
+  NotificationType,
   User,
   UserRoleEnum,
   UserStatus,
 } from '../../../generated/prisma/client';
 import { accountAccessMessage } from '../User/user.policy';
+import { logActivity } from '../../utils/activityLog';
+import { notifyAdmins, sendNotification } from '../../utils/notification';
 
 const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
 
@@ -93,6 +96,31 @@ const loginWithFirebase = catchAsync(async (req, res) => {
         role: UserRoleEnum.CASHIER,
         status: UserStatus.PENDING,
       },
+    });
+
+    logActivity({
+      userId: user.id,
+      action: 'USER_REGISTER_FIREBASE',
+      entityType: 'USER',
+      entityId: user.id,
+      req,
+      details: { provider, email: user.email },
+    });
+
+    sendNotification({
+      userId: user.id,
+      title: 'Welcome to Receipt Management System',
+      message:
+        'Your account has been created via social login and is pending admin approval.',
+      type: NotificationType.INFO,
+      link: '/profile',
+    });
+
+    notifyAdmins({
+      title: 'New Social Registration',
+      message: `${user.firstName || 'User'} (${user.email}) registered via ${provider}.`,
+      type: NotificationType.INFO,
+      link: `/users/${user.id}`,
     });
   }
 
@@ -190,7 +218,7 @@ const registerUser = catchAsync(async (req, res) => {
 
   const otp = generateOTP();
 
-  await prisma.user.create({
+  const createdUser = await prisma.user.create({
     data: {
       firstName: payload.firstName,
       lastName: payload.lastName,
@@ -205,6 +233,31 @@ const registerUser = catchAsync(async (req, res) => {
       otpAttempts: 0,
       otpFor: 'USER_VERIFICATION',
     },
+  });
+
+  logActivity({
+    userId: createdUser.id,
+    action: 'USER_REGISTER',
+    entityType: 'USER',
+    entityId: createdUser.id,
+    req,
+    details: { email: payload.email, phoneNumber: payload.phoneNumber },
+  });
+
+  sendNotification({
+    userId: createdUser.id,
+    title: 'Welcome to Receipt Management System',
+    message:
+      'Your account has been registered. Please verify your email using the OTP code.',
+    type: NotificationType.INFO,
+    link: '/profile',
+  });
+
+  notifyAdmins({
+    title: 'New User Registered',
+    message: `${payload.firstName} ${payload.lastName} (${payload.email}) registered an account.`,
+    type: NotificationType.INFO,
+    link: `/users/${createdUser.id}`,
   });
 
   if (config.env === 'development') {
@@ -258,6 +311,31 @@ const verifyEmail = catchAsync(async (req, res) => {
     select: {
       id: true,
     },
+  });
+
+  logActivity({
+    userId: userData.id,
+    action: 'USER_VERIFY_EMAIL',
+    entityType: 'USER',
+    entityId: userData.id,
+    req,
+    details: { email: userData.email },
+  });
+
+  sendNotification({
+    userId: userData.id,
+    title: 'Email Verified',
+    message:
+      'Your email has been verified successfully. Your account is pending admin approval.',
+    type: NotificationType.SUCCESS,
+    link: '/profile',
+  });
+
+  notifyAdmins({
+    title: 'User Email Verified',
+    message: `${userData.firstName} ${userData.lastName} (${userData.email}) verified their email.`,
+    type: NotificationType.INFO,
+    link: `/users/${userData.id}`,
   });
 
   sendResponse(res, {
@@ -333,6 +411,22 @@ const changePassword = catchAsync(async (req, res) => {
 
   await destroyAllUserSessions(userData.id);
   clearAuthCookies(res);
+
+  logActivity({
+    userId: userData.id,
+    action: 'USER_CHANGE_PASSWORD',
+    entityType: 'USER',
+    entityId: userData.id,
+    req,
+  });
+
+  sendNotification({
+    userId: userData.id,
+    title: 'Password Changed',
+    message: 'Your password was changed successfully.',
+    type: NotificationType.WARNING,
+    link: '/profile',
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -469,6 +563,22 @@ const resetPassword = catchAsync(async (req, res) => {
 
   await destroyAllUserSessions(userData.id);
 
+  logActivity({
+    userId: userData.id,
+    action: 'USER_RESET_PASSWORD',
+    entityType: 'USER',
+    entityId: userData.id,
+    req,
+  });
+
+  sendNotification({
+    userId: userData.id,
+    title: 'Password Reset Successful',
+    message: 'Your account password has been reset successfully.',
+    type: NotificationType.WARNING,
+    link: '/profile',
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     data: { message: 'Password reset successfully' },
@@ -477,6 +587,17 @@ const resetPassword = catchAsync(async (req, res) => {
 
 const logoutUser = catchAsync(async (req, res) => {
   const sid = req.cookies?.[config.session.cookie_name] as string | undefined;
+
+  if (req.user?.id) {
+    logActivity({
+      userId: req.user.id,
+      action: 'USER_LOGOUT',
+      entityType: 'USER',
+      entityId: req.user.id,
+      req,
+    });
+  }
+
   await destroySession(sid);
   clearAuthCookies(res);
   sendResponse(res, {
@@ -513,6 +634,23 @@ const removeDevice = catchAsync(async (req, res) => {
   if (isCurrent) {
     clearAuthCookies(res);
   }
+
+  logActivity({
+    userId: req.user.id,
+    action: 'USER_REVOKE_DEVICE',
+    entityType: 'SESSION',
+    entityId: session.id,
+    req,
+    details: { sessionId: session.id },
+  });
+
+  sendNotification({
+    userId: req.user.id,
+    title: 'Device Removed',
+    message: 'A device session was removed from your account.',
+    type: NotificationType.INFO,
+    link: '/profile',
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
