@@ -8,33 +8,43 @@ import { NotificationType, UserRoleEnum } from '../../../generated/prisma/client
 import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
 import { customerSearchableFields } from './customer.constant';
+import { parsePhoneInput, getPhoneLookupVariants } from '../../utils/phone';
 
 const createCustomer = catchAsync(async (req, res) => {
   const actor = req.user;
   const payload = req.body;
 
-  // Check if customer with phone number already exists
-  const existing = await prisma.customer.findUnique({
-    where: { phoneNumber: payload.phoneNumber },
+  const { countryCode, phoneNumber } = parsePhoneInput(payload.phoneNumber, payload.countryCode);
+  const variants = getPhoneLookupVariants(countryCode, phoneNumber);
+
+  // Check if customer with this countryCode and phoneNumber already exists (or matches lookup variants)
+  const existing = await prisma.customer.findFirst({
+    where: {
+      OR: [
+        { countryCode, phoneNumber },
+        { phoneNumber: { in: variants } },
+      ],
+    },
   });
 
   if (existing) {
     if (existing.isDeleted) {
       throw new AppError(
         httpStatus.CONFLICT,
-        'A customer with this phone number was previously deleted. Please restore the customer record instead.',
+        `A customer with phone number ${countryCode} ${phoneNumber} was previously deleted. Please restore the customer record instead.`,
       );
     }
     throw new AppError(
       httpStatus.CONFLICT,
-      'A customer with this phone number already exists.',
+      `A customer with phone number ${countryCode} ${phoneNumber} already exists.`,
     );
   }
 
   const customer = await prisma.customer.create({
     data: {
-      name: payload.name,
-      phoneNumber: payload.phoneNumber,
+      name: payload.name.trim(),
+      countryCode,
+      phoneNumber,
       email: payload.email || null,
       address: payload.address || null,
       createdById: actor.id,
@@ -104,6 +114,7 @@ const getAllCustomers = catchAsync(async (req, res) => {
     .customFields({
       id: true,
       name: true,
+      countryCode: true,
       phoneNumber: true,
       email: true,
       address: true,
@@ -200,15 +211,33 @@ const updateCustomer = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Customer not found');
   }
 
-  // If phone number is changing, verify it's not taken
-  if (payload.phoneNumber && payload.phoneNumber !== existing.phoneNumber) {
-    const phoneConflict = await prisma.customer.findUnique({
-      where: { phoneNumber: payload.phoneNumber },
+  let updatedCountryCode = existing.countryCode;
+  let updatedPhone = existing.phoneNumber;
+
+  if (payload.phoneNumber || payload.countryCode) {
+    const parsed = parsePhoneInput(
+      payload.phoneNumber || existing.phoneNumber,
+      payload.countryCode || existing.countryCode,
+    );
+    updatedCountryCode = parsed.countryCode;
+    updatedPhone = parsed.phoneNumber;
+
+    // Check conflict with other customers
+    const variants = getPhoneLookupVariants(updatedCountryCode, updatedPhone);
+    const phoneConflict = await prisma.customer.findFirst({
+      where: {
+        id: { not: id },
+        OR: [
+          { countryCode: updatedCountryCode, phoneNumber: updatedPhone },
+          { phoneNumber: { in: variants } },
+        ],
+      },
     });
+
     if (phoneConflict) {
       throw new AppError(
         httpStatus.CONFLICT,
-        'Another customer with this phone number already exists.',
+        `Another customer with phone number ${updatedCountryCode} ${updatedPhone} already exists.`,
       );
     }
   }
@@ -217,6 +246,9 @@ const updateCustomer = catchAsync(async (req, res) => {
     where: { id },
     data: {
       ...payload,
+      countryCode: updatedCountryCode,
+      phoneNumber: updatedPhone,
+      name: payload.name ? payload.name.trim() : undefined,
       updatedById: actor.id,
     },
   });

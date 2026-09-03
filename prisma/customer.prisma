@@ -1,7 +1,8 @@
 model Customer {
   id                  String    @id @default(uuid())
   name                String
-  phoneNumber         String    @unique
+  countryCode         String    @default("+880")
+  phoneNumber         String
   email               String?
   address             String?
   isDeleted           Boolean   @default(false)
@@ -22,7 +23,9 @@ model Customer {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
+  @@unique([countryCode, phoneNumber])
   @@index([phoneNumber])
+  @@index([countryCode])
   @@index([name])
   @@index([isDeleted])
   @@index([isDeleteRequested])

@@ -13,6 +13,12 @@ model Receipt {
   note          String?
   isDeleted     Boolean       @default(false)
 
+  isDeleteRequested   Boolean   @default(false)
+  deleteRequestedById String?
+  deleteRequestedBy   User?     @relation("ReceiptDeleteRequestedBy", fields: [deleteRequestedById], references: [id], onDelete: SetNull)
+  deleteRequestedAt   DateTime?
+  deleteReason        String?
+
   createdById   String?
   updatedById   String?
   createdBy     User?         @relation("ReceiptCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
@@ -27,6 +33,8 @@ model Receipt {
   @@index([receiptNumber])
   @@index([customerId])
   @@index([status])
+  @@index([isDeleted])
+  @@index([isDeleteRequested])
   @@index([createdById])
   @@index([updatedById])
   @@index([createdAt])

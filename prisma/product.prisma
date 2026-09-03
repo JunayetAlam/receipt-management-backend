@@ -1,6 +1,7 @@
 model Product {
   id                  String      @id @default(uuid())
   name                String
+  slug                String?
   unit                ProductUnit @default(PIECE)
   sellingPrice        Float
   buyingPrice         Float?
@@ -25,6 +26,7 @@ model Product {
   updatedAt           DateTime    @updatedAt
 
   @@index([name])
+  @@index([slug])
   @@index([isDeleted])
   @@index([isDeleteRequested])
   @@index([createdById])

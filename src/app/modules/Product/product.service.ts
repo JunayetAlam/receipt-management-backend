@@ -8,14 +8,42 @@ import { NotificationType, UserRoleEnum } from '../../../generated/prisma/client
 import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
 import { productSearchableFields } from './product.constant';
+import { generateSlug } from '../../utils/slug';
 
 const createProduct = catchAsync(async (req, res) => {
   const actor = req.user;
   const payload = req.body;
+  const trimmedName = payload.name.trim();
+  const slug = generateSlug(trimmedName);
+
+  // Check for duplicate product by slug or case-insensitive name
+  const existingProduct = await prisma.product.findFirst({
+    where: {
+      OR: [
+        { slug },
+        { name: { equals: trimmedName, mode: 'insensitive' } },
+      ],
+    },
+  });
+
+  if (existingProduct) {
+    if (!existingProduct.isDeleted) {
+      throw new AppError(
+        httpStatus.CONFLICT,
+        `A product with name "${trimmedName}" already exists and is active. Please use a different name or edit the existing product.`,
+      );
+    } else {
+      throw new AppError(
+        httpStatus.CONFLICT,
+        `A product with name "${trimmedName}" already exists in deleted/trash items. Please restore it or choose a different name.`,
+      );
+    }
+  }
 
   const product = await prisma.product.create({
     data: {
-      name: payload.name,
+      name: trimmedName,
+      slug,
       unit: payload.unit,
       sellingPrice: payload.sellingPrice,
       buyingPrice: payload.buyingPrice ?? null,
@@ -89,6 +117,7 @@ const getAllProducts = catchAsync(async (req, res) => {
     .customFields({
       id: true,
       name: true,
+      slug: true,
       unit: true,
       sellingPrice: true,
       buyingPrice: true,
@@ -174,10 +203,49 @@ const updateProduct = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
   }
 
+  let slugToUpdate: string | undefined;
+
+  if (payload.name) {
+    const trimmedName = payload.name.trim();
+    const newSlug = generateSlug(trimmedName);
+
+    // Check if another product already uses this slug or name
+    const duplicate = await prisma.product.findFirst({
+      where: {
+        id: { not: id },
+        OR: [
+          { slug: newSlug },
+          { name: { equals: trimmedName, mode: 'insensitive' } },
+        ],
+      },
+    });
+
+    if (duplicate) {
+      if (!duplicate.isDeleted) {
+        throw new AppError(
+          httpStatus.CONFLICT,
+          `A product with name "${trimmedName}" already exists and is active. Please choose a different name.`,
+        );
+      } else {
+        throw new AppError(
+          httpStatus.CONFLICT,
+          `A product with name "${trimmedName}" already exists in deleted/trash items. Please restore it or choose a different name.`,
+        );
+      }
+    }
+
+    slugToUpdate = newSlug;
+  } else if (!existing.slug && existing.name) {
+    // Backfill slug for legacy products when modified
+    slugToUpdate = generateSlug(existing.name);
+  }
+
   const updatedProduct = await prisma.product.update({
     where: { id },
     data: {
       ...payload,
+      ...(payload.name ? { name: payload.name.trim() } : {}),
+      ...(slugToUpdate ? { slug: slugToUpdate } : {}),
       updatedById: actor.id,
     },
   });

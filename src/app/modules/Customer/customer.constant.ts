@@ -3,6 +3,7 @@ export const customerSearchableFields = ['name', 'phoneNumber', 'email', 'addres
 export const customerFilterableFields = [
   'searchTerm',
   'phoneNumber',
+  'countryCode',
   'isDeleted',
   'isDeleteRequested',
 ];

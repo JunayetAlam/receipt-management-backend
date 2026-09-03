@@ -7,6 +7,7 @@ import { NotificationRouters } from '../modules/Notification/notification.routes
 import { ActivityLogRouters } from '../modules/ActivityLog/activityLog.routes';
 import { ProductRouters } from '../modules/Product/product.routes';
 import { CustomerRouters } from '../modules/Customer/customer.routes';
+import { ReceiptRouters } from '../modules/Receipt/receipt.routes';
 
 const router = express.Router();
 
@@ -26,6 +27,10 @@ const moduleRoutes = [
   {
     path: '/products',
     route: ProductRouters,
+  },
+  {
+    path: '/receipts',
+    route: ReceiptRouters,
   },
   {
     path: '/assets',
