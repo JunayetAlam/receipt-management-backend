@@ -53,6 +53,7 @@ model User {
   deleteRequestedReceipts Receipt[] @relation("ReceiptDeleteRequestedBy")
 
   receivedPayments ReceiptPayment[] @relation("ReceiptPaymentCreatedBy")
+  approvedPayments ReceiptPayment[] @relation("ReceiptPaymentApprovedBy")
 
   activityLogs      ActivityLog[]
   notifications     Notification[]     @relation("UserNotifications")

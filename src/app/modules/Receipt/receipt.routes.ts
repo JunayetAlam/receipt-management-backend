@@ -73,4 +73,26 @@ router.post(
   ReceiptServices.addPayment,
 );
 
+// Update an existing payment on a receipt
+router.patch(
+  '/:id/payments/:paymentId',
+  auth('ANY'),
+  validateRequest.body(receiptValidation.updatePaymentSchema),
+  ReceiptServices.updatePayment,
+);
+
+// Approve a payment (Admin/Superadmin only)
+router.patch(
+  '/:id/payments/:paymentId/approve',
+  auth('SUPERADMIN', 'ADMIN'),
+  ReceiptServices.approvePayment,
+);
+
+// Delete a payment on a receipt (Reverts paid amount)
+router.delete(
+  '/:id/payments/:paymentId',
+  auth('ANY'),
+  ReceiptServices.deletePayment,
+);
+
 export const ReceiptRouters = router;

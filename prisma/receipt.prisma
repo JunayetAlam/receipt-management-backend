@@ -66,21 +66,27 @@ model ReceiptItem {
 }
 
 model ReceiptPayment {
-  id          String   @id @default(uuid())
+  id          String        @id @default(uuid())
   receiptId   String
-  receipt     Receipt  @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  receipt     Receipt       @relation(fields: [receiptId], references: [id], onDelete: Cascade)
 
   amount      Float
   note        String?
+  status      ReceiptStatus @default(PENDING)
 
   createdById String?
-  createdBy   User?    @relation("ReceiptPaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdBy   User?         @relation("ReceiptPaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  approvedById String?
+  approvedBy   User?        @relation("ReceiptPaymentApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt   DateTime?
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   @@index([receiptId])
   @@index([createdById])
+  @@index([approvedById])
   @@index([createdAt])
   @@map("receipt_payments")
 }

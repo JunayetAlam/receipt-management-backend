@@ -54,6 +54,15 @@ const addPaymentSchema = z.object({
   body: z.object({
     amount: z.number({ error: 'Payment amount is required' }).positive('Amount must be greater than 0'),
     note: z.string().max(500, 'Note is too long').optional().nullable(),
+    date: z.string().optional().nullable(),
+  }),
+});
+
+const updatePaymentSchema = z.object({
+  body: z.object({
+    amount: z.number().positive('Amount must be greater than 0').optional(),
+    note: z.string().max(500, 'Note is too long').optional().nullable(),
+    date: z.string().optional().nullable(),
   }),
 });
 
@@ -75,6 +84,7 @@ export const receiptValidation = {
   createReceiptSchema,
   updateReceiptSchema,
   addPaymentSchema,
+  updatePaymentSchema,
   deleteRequestSchema,
   updateStatusSchema,
 };

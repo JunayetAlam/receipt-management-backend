@@ -281,7 +281,7 @@ const createReceipt = catchAsync(async (req, res) => {
 
   notifyAdmins({
     title: 'New Receipt Created',
-    message: `Receipt ${result?.receiptNumber} created for ${customer.name} (${totalAmount} BDT).`,
+    message: `Receipt ${result?.receiptNumber} created for ${customer.name} (৳${totalAmount}).`,
     type: NotificationType.INFO,
     link: `/receipts/${result?.id}`,
   });
@@ -420,8 +420,11 @@ const getReceiptById = catchAsync(async (req, res) => {
           createdBy: {
             select: { id: true, firstName: true, lastName: true },
           },
+          approvedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: 'asc' },
       },
       createdBy: {
         select: { id: true, firstName: true, lastName: true, email: true },
@@ -989,7 +992,7 @@ const restoreReceipt = catchAsync(async (req, res) => {
 const addPayment = catchAsync(async (req, res) => {
   const { id } = req.params;
   const actor = req.user;
-  const { amount, note } = req.body;
+  const { amount, note, date } = req.body;
 
   const receipt = await prisma.receipt.findUnique({
     where: { id },
@@ -1008,7 +1011,7 @@ const addPayment = catchAsync(async (req, res) => {
   if (paymentAmount > receipt.dueAmount) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      `Payment amount (${paymentAmount} BDT) exceeds remaining due amount (${receipt.dueAmount} BDT)`,
+      `Payment amount (৳${paymentAmount}) exceeds remaining due amount (৳${receipt.dueAmount})`,
     );
   }
 
@@ -1020,6 +1023,12 @@ const addPayment = catchAsync(async (req, res) => {
         amount: paymentAmount,
         note: note || null,
         createdById: actor.id,
+        createdAt: date ? new Date(date) : undefined,
+      },
+      include: {
+        createdBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
       },
     });
 
@@ -1044,7 +1053,15 @@ const addPayment = catchAsync(async (req, res) => {
           },
         },
         payments: {
-          orderBy: { createdAt: 'desc' },
+          orderBy: { createdAt: 'asc' },
+          include: {
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            approvedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
         },
       },
     });
@@ -1069,7 +1086,7 @@ const addPayment = catchAsync(async (req, res) => {
   sendNotification({
     userId: actor.id,
     title: 'Payment Received',
-    message: `Payment of ${paymentAmount} BDT recorded for Receipt ${receipt.receiptNumber}. Remaining due: ${result.receipt.dueAmount} BDT.`,
+    message: `Payment of ৳${paymentAmount} recorded for Receipt ${receipt.receiptNumber}. Remaining due: ৳${result.receipt.dueAmount}.`,
     type: NotificationType.SUCCESS,
     link: `/receipts/${id}`,
   });
@@ -1078,6 +1095,318 @@ const addPayment = catchAsync(async (req, res) => {
     statusCode: httpStatus.CREATED,
     message: 'Payment recorded successfully',
     data: result,
+  });
+});
+
+/**
+ * Update an existing payment on a receipt
+ */
+const updatePayment = catchAsync(async (req, res) => {
+  const { id, paymentId } = req.params;
+  const actor = req.user;
+  const { amount, note, date } = req.body;
+
+  const receipt = await prisma.receipt.findUnique({
+    where: { id },
+  });
+
+  if (!receipt || receipt.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
+  }
+
+  const existingPayment = await prisma.receiptPayment.findUnique({
+    where: { id: paymentId },
+  });
+
+  if (!existingPayment || existingPayment.receiptId !== id) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Payment record not found for this receipt');
+  }
+
+  if (existingPayment.status === ReceiptStatus.APPROVED) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Approved payments cannot be edited');
+  }
+
+  const newAmount = amount !== undefined ? roundToTwo(amount) : existingPayment.amount;
+  const diff = roundToTwo(newAmount - existingPayment.amount);
+
+  if (diff > receipt.dueAmount) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Payment increase of ৳${diff} exceeds remaining due amount (৳${receipt.dueAmount})`,
+    );
+  }
+
+  const result = await prisma.$transaction(async tx => {
+    // 1. Update ReceiptPayment
+    const updatedPayment = await tx.receiptPayment.update({
+      where: { id: paymentId },
+      data: {
+        amount: newAmount,
+        note: note !== undefined ? (note || null) : existingPayment.note,
+        createdAt: date ? new Date(date) : undefined,
+      },
+      include: {
+        createdBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        approvedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+      },
+    });
+
+    // 2. Update Receipt totals
+    const newPaidAmount = roundToTwo(receipt.paidAmount + diff);
+    const newDueAmount = roundToTwo(Math.max(0, receipt.totalAmount - newPaidAmount));
+
+    const updatedReceipt = await tx.receipt.update({
+      where: { id },
+      data: {
+        paidAmount: newPaidAmount,
+        dueAmount: newDueAmount,
+        updatedById: actor.id,
+      },
+      include: {
+        customer: true,
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, stock: true, unit: true },
+            },
+          },
+        },
+        payments: {
+          orderBy: { createdAt: 'asc' },
+          include: {
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            approvedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+      },
+    });
+
+    return { payment: updatedPayment, receipt: updatedReceipt };
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'UPDATE_RECEIPT_PAYMENT',
+    entityType: 'RECEIPT_PAYMENT',
+    entityId: paymentId,
+    req,
+    details: {
+      receiptId: id,
+      receiptNumber: receipt.receiptNumber,
+      oldAmount: existingPayment.amount,
+      newAmount,
+      diff,
+      remainingDue: result.receipt.dueAmount,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Payment updated successfully',
+    data: result,
+  });
+});
+
+/**
+ * Delete an existing payment on a receipt and restore due amount
+ */
+const deletePayment = catchAsync(async (req, res) => {
+  const { id, paymentId } = req.params;
+  const actor = req.user;
+
+  const receipt = await prisma.receipt.findUnique({
+    where: { id },
+  });
+
+  if (!receipt || receipt.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
+  }
+
+  const existingPayment = await prisma.receiptPayment.findUnique({
+    where: { id: paymentId },
+  });
+
+  if (!existingPayment || existingPayment.receiptId !== id) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Payment record not found for this receipt');
+  }
+
+  if (existingPayment.status === ReceiptStatus.APPROVED) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Approved payments cannot be deleted');
+  }
+
+  const result = await prisma.$transaction(async tx => {
+    // 1. Delete payment
+    await tx.receiptPayment.delete({
+      where: { id: paymentId },
+    });
+
+    // 2. Revert paid and due amounts
+    const newPaidAmount = roundToTwo(Math.max(0, receipt.paidAmount - existingPayment.amount));
+    const newDueAmount = roundToTwo(Math.max(0, receipt.totalAmount - newPaidAmount));
+
+    const updatedReceipt = await tx.receipt.update({
+      where: { id },
+      data: {
+        paidAmount: newPaidAmount,
+        dueAmount: newDueAmount,
+        updatedById: actor.id,
+      },
+      include: {
+        customer: true,
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, stock: true, unit: true },
+            },
+          },
+        },
+        payments: {
+          orderBy: { createdAt: 'asc' },
+          include: {
+            createdBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            approvedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+      },
+    });
+
+    return { deletedPaymentId: paymentId, receipt: updatedReceipt };
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'DELETE_RECEIPT_PAYMENT',
+    entityType: 'RECEIPT_PAYMENT',
+    entityId: paymentId,
+    req,
+    details: {
+      receiptId: id,
+      receiptNumber: receipt.receiptNumber,
+      amount: existingPayment.amount,
+      remainingDue: result.receipt.dueAmount,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Payment deleted successfully',
+    data: result,
+  });
+});
+
+/**
+ * Approve a payment (Admin/Superadmin only)
+ */
+const approvePayment = catchAsync(async (req, res) => {
+  const { id, paymentId } = req.params;
+  const actor = req.user;
+
+  // Enforce Admin / Superadmin
+  if (actor.role !== UserRoleEnum.ADMIN && actor.role !== UserRoleEnum.SUPERADMIN) {
+    throw new AppError(httpStatus.FORBIDDEN, 'Only Admin and Super Admin can approve payments');
+  }
+
+  const receipt = await prisma.receipt.findUnique({
+    where: { id },
+  });
+
+  if (!receipt || receipt.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
+  }
+
+  const existingPayment = await prisma.receiptPayment.findUnique({
+    where: { id: paymentId },
+  });
+
+  if (!existingPayment || existingPayment.receiptId !== id) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Payment record not found for this receipt');
+  }
+
+  if (existingPayment.status === ReceiptStatus.APPROVED) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Payment is already approved');
+  }
+
+  const updatedPayment = await prisma.receiptPayment.update({
+    where: { id: paymentId },
+    data: {
+      status: ReceiptStatus.APPROVED,
+      approvedById: actor.id,
+      approvedAt: new Date(),
+    },
+    include: {
+      createdBy: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+      approvedBy: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+    },
+  });
+
+  const updatedReceipt = await prisma.receipt.findUnique({
+    where: { id },
+    include: {
+      customer: true,
+      items: {
+        include: {
+          product: {
+            select: { id: true, name: true, stock: true, unit: true },
+          },
+        },
+      },
+      payments: {
+        orderBy: { createdAt: 'asc' },
+        include: {
+          createdBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          approvedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+        },
+      },
+    },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'APPROVE_RECEIPT_PAYMENT',
+    entityType: 'RECEIPT_PAYMENT',
+    entityId: paymentId,
+    req,
+    details: {
+      receiptId: id,
+      receiptNumber: receipt.receiptNumber,
+      amount: existingPayment.amount,
+    },
+  });
+
+  if (existingPayment.createdById && existingPayment.createdById !== actor.id) {
+    sendNotification({
+      userId: existingPayment.createdById,
+      title: 'Payment Approved',
+      message: `Your payment of ৳${existingPayment.amount} on Receipt ${receipt.receiptNumber} was approved by ${actor.name}.`,
+      type: NotificationType.SUCCESS,
+      link: `/receipts/${id}`,
+    });
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Payment approved successfully',
+    data: { payment: updatedPayment, receipt: updatedReceipt },
   });
 });
 
@@ -1113,7 +1442,7 @@ const updateReceiptStatus = catchAsync(async (req, res) => {
         },
       },
       payments: {
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: 'asc' },
       },
     },
   });
@@ -1159,4 +1488,7 @@ export const ReceiptServices = {
   rejectDeleteReceipt,
   restoreReceipt,
   addPayment,
+  updatePayment,
+  deletePayment,
+  approvePayment,
 };
