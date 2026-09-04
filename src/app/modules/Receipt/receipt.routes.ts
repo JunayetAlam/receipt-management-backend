@@ -28,6 +28,14 @@ router.put(
   ReceiptServices.updateReceipt,
 );
 
+// Update receipt status (Admin and Superadmin only: Approve / Reject)
+router.patch(
+  '/:id/status',
+  auth('SUPERADMIN', 'ADMIN'),
+  validateRequest.body(receiptValidation.updateStatusSchema),
+  ReceiptServices.updateReceiptStatus,
+);
+
 // Delete receipt (Immediate soft delete for Admin; Deletion request for Cashier)
 router.delete(
   '/:id',

@@ -63,9 +63,18 @@ const deleteRequestSchema = z.object({
   }),
 });
 
+const updateStatusSchema = z.object({
+  body: z.object({
+    status: z.nativeEnum(ReceiptStatus, {
+      error: 'Valid receipt status (PENDING, APPROVED, REJECTED) is required',
+    }),
+  }),
+});
+
 export const receiptValidation = {
   createReceiptSchema,
   updateReceiptSchema,
   addPaymentSchema,
   deleteRequestSchema,
+  updateStatusSchema,
 };

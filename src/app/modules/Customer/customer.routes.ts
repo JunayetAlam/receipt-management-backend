@@ -9,6 +9,9 @@ const router = express.Router();
 // Get all customers (Admin, Superadmin, Cashier)
 router.get('/', auth('ANY'), CustomerServices.getAllCustomers);
 
+// Fast customer lookup by phone (before /:id)
+router.get('/lookup-phone', auth('ANY'), CustomerServices.lookupCustomerByPhone);
+
 // Get single customer
 router.get('/:id', auth('ANY'), CustomerServices.getCustomerById);
 

@@ -86,10 +86,34 @@ const createReceipt = catchAsync(async (req, res) => {
         },
       });
     } else if (customer.isDeleted) {
-      // Auto-restore customer if previously deleted
+      // Auto-restore customer if previously deleted with new details
       customer = await prisma.customer.update({
         where: { id: customer.id },
-        data: { isDeleted: false, updatedById: actor.id },
+        data: {
+          isDeleted: false,
+          isDeleteRequested: false,
+          deleteReason: null,
+          deleteRequestedAt: null,
+          deleteRequestedById: null,
+          name: customerName?.trim() || customer.name,
+          address: customerAddress !== undefined ? (customerAddress?.trim() || null) : customer.address,
+          email: customerEmail !== undefined ? (customerEmail?.trim() || null) : customer.email,
+          updatedById: actor.id,
+        },
+      });
+
+      logActivity({
+        userId: actor.id,
+        action: 'RESTORE_CUSTOMER',
+        entityType: 'CUSTOMER',
+        entityId: customer.id,
+        req,
+        details: {
+          name: customer.name,
+          countryCode: customer.countryCode,
+          phoneNumber: customer.phoneNumber,
+          source: 'AUTO_RECEIPT_CREATION',
+        },
       });
     }
   }
@@ -142,30 +166,38 @@ const createReceipt = catchAsync(async (req, res) => {
     // Generate unique receipt number
     const receiptNumber = await generateReceiptNumber(tx);
 
-    // Check and deduct inventory stock
+    // Check and deduct inventory stock (aggregated by productId for multi-row items)
+    const productQtyMap = new Map<string, number>();
     for (const item of calculatedItems) {
       if (item.productId) {
-        const product = await tx.product.findUnique({
-          where: { id: item.productId },
-        });
+        productQtyMap.set(
+          item.productId,
+          roundToTwo((productQtyMap.get(item.productId) || 0) + item.quantity),
+        );
+      }
+    }
 
-        if (product) {
-          let newStock = 0;
-          if (product.stock >= item.quantity) {
-            newStock = roundToTwo(product.stock - item.quantity);
-          } else {
-            // Stock shortage: clamp to 0 and record warning
-            newStock = 0;
-            warnings.push(
-              `Product "${product.name}" stock was insufficient (available: ${product.stock}, ordered: ${item.quantity}). Stock has been set to 0.`,
-            );
-          }
+    for (const [productId, totalQty] of productQtyMap.entries()) {
+      const product = await tx.product.findUnique({
+        where: { id: productId },
+      });
 
-          await tx.product.update({
-            where: { id: product.id },
-            data: { stock: newStock },
-          });
+      if (product) {
+        let newStock = 0;
+        if (product.stock >= totalQty) {
+          newStock = roundToTwo(product.stock - totalQty);
+        } else {
+          // Stock shortage: clamp to 0 and record unified warning
+          newStock = 0;
+          warnings.push(
+            `Product "${product.name}" stock was insufficient (available: ${product.stock}, total ordered: ${totalQty}). Stock has been set to 0.`,
+          );
         }
+
+        await tx.product.update({
+          where: { id: product.id },
+          data: { stock: newStock },
+        });
       }
     }
 
@@ -324,6 +356,7 @@ const getAllReceipts = catchAsync(async (req, res) => {
         select: {
           id: true,
           name: true,
+          countryCode: true,
           phoneNumber: true,
         },
       },
@@ -473,10 +506,48 @@ const updateReceipt = catchAsync(async (req, res) => {
           updatedById: actor.id,
         },
       });
+
+      logActivity({
+        userId: actor.id,
+        action: 'CREATE_CUSTOMER',
+        entityType: 'CUSTOMER',
+        entityId: cust.id,
+        req,
+        details: {
+          name: cust.name,
+          countryCode: cust.countryCode,
+          phoneNumber: cust.phoneNumber,
+          source: 'AUTO_RECEIPT_UPDATE',
+        },
+      });
     } else if (cust.isDeleted) {
       cust = await prisma.customer.update({
         where: { id: cust.id },
-        data: { isDeleted: false, updatedById: actor.id },
+        data: {
+          isDeleted: false,
+          isDeleteRequested: false,
+          deleteReason: null,
+          deleteRequestedAt: null,
+          deleteRequestedById: null,
+          name: payload.customerName?.trim() || cust.name,
+          address: payload.customerAddress !== undefined ? (payload.customerAddress?.trim() || null) : cust.address,
+          email: payload.customerEmail !== undefined ? (payload.customerEmail?.trim() || null) : cust.email,
+          updatedById: actor.id,
+        },
+      });
+
+      logActivity({
+        userId: actor.id,
+        action: 'RESTORE_CUSTOMER',
+        entityType: 'CUSTOMER',
+        entityId: cust.id,
+        req,
+        details: {
+          name: cust.name,
+          countryCode: cust.countryCode,
+          phoneNumber: cust.phoneNumber,
+          source: 'AUTO_RECEIPT_UPDATE',
+        },
       });
     }
 
@@ -576,7 +647,10 @@ const updateReceipt = catchAsync(async (req, res) => {
       where: { id },
       data: {
         customerId: customerIdToUpdate || undefined,
-        status: payload.status || undefined,
+        status:
+          actor.role === UserRoleEnum.CASHIER
+            ? undefined
+            : payload.status || undefined,
         note: payload.note !== undefined ? payload.note : undefined,
         subTotal,
         discount: finalDiscount,
@@ -962,6 +1036,13 @@ const addPayment = catchAsync(async (req, res) => {
       },
       include: {
         customer: true,
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, stock: true, unit: true },
+            },
+          },
+        },
         payments: {
           orderBy: { createdAt: 'desc' },
         },
@@ -1000,11 +1081,79 @@ const addPayment = catchAsync(async (req, res) => {
   });
 });
 
+/**
+ * Update receipt status (Admin/Superadmin only: Approve or Reject)
+ */
+const updateReceiptStatus = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+  const { status } = req.body;
+
+  const receipt = await prisma.receipt.findUnique({
+    where: { id },
+  });
+
+  if (!receipt || receipt.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
+  }
+
+  const updatedReceipt = await prisma.receipt.update({
+    where: { id },
+    data: {
+      status,
+      updatedById: actor.id,
+    },
+    include: {
+      customer: true,
+      items: {
+        include: {
+          product: {
+            select: { id: true, name: true, stock: true, unit: true },
+          },
+        },
+      },
+      payments: {
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: status === ReceiptStatus.APPROVED ? 'APPROVE_RECEIPT' : 'REJECT_RECEIPT',
+    entityType: 'RECEIPT',
+    entityId: id,
+    req,
+    details: {
+      receiptNumber: receipt.receiptNumber,
+      oldStatus: receipt.status,
+      newStatus: status,
+    },
+  });
+
+  if (receipt.createdById && receipt.createdById !== actor.id) {
+    sendNotification({
+      userId: receipt.createdById,
+      title: `Receipt ${status}`,
+      message: `Receipt ${receipt.receiptNumber} has been ${status.toLowerCase()} by admin.`,
+      type: status === ReceiptStatus.APPROVED ? NotificationType.SUCCESS : NotificationType.WARNING,
+      link: `/receipts/${id}`,
+    });
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: `Receipt status updated to ${status}`,
+    data: updatedReceipt,
+  });
+});
+
 export const ReceiptServices = {
   createReceipt,
   getAllReceipts,
   getReceiptById,
   updateReceipt,
+  updateReceiptStatus,
   deleteReceipt,
   confirmDeleteReceipt,
   rejectDeleteReceipt,

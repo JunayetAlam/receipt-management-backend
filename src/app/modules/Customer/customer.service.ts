@@ -29,11 +29,53 @@ const createCustomer = catchAsync(async (req, res) => {
 
   if (existing) {
     if (existing.isDeleted) {
-      throw new AppError(
-        httpStatus.CONFLICT,
-        `A customer with phone number ${countryCode} ${phoneNumber} was previously deleted. Please restore the customer record instead.`,
-      );
+      // Reactivate previously deleted customer with new name/address/email
+      const restored = await prisma.customer.update({
+        where: { id: existing.id },
+        data: {
+          name: payload.name.trim(),
+          email: payload.email !== undefined ? (payload.email || null) : existing.email,
+          address: payload.address !== undefined ? (payload.address || null) : existing.address,
+          isDeleted: false,
+          isDeleteRequested: false,
+          deleteReason: null,
+          deleteRequestedAt: null,
+          deleteRequestedById: null,
+          updatedById: actor.id,
+        },
+        include: {
+          createdBy: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
+          },
+        },
+      });
+
+      logActivity({
+        userId: actor.id,
+        action: 'RESTORE_CUSTOMER',
+        entityType: 'CUSTOMER',
+        entityId: restored.id,
+        req,
+        details: {
+          name: restored.name,
+          phoneNumber: restored.phoneNumber,
+          source: 'REACTIVATE_ON_CUSTOMER_CONFIRM',
+        },
+      });
+
+      sendResponse(res, {
+        statusCode: httpStatus.OK,
+        message: 'Customer reactivated and updated successfully',
+        data: restored,
+      });
+      return;
     }
+
     throw new AppError(
       httpStatus.CONFLICT,
       `A customer with phone number ${countryCode} ${phoneNumber} already exists.`,
@@ -511,13 +553,53 @@ const restoreCustomer = catchAsync(async (req, res) => {
   });
 });
 
+/**
+ * Fast lookup for existing active customer by phone number (domestic or international variants).
+ * Read-only GET query - does not log activity.
+ */
+const lookupCustomerByPhone = catchAsync(async (req, res) => {
+  const { phoneNumber: rawPhone, countryCode: rawCountryCode } = req.query;
+
+  if (!rawPhone || typeof rawPhone !== 'string' || !rawPhone.trim()) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Phone number is required for lookup');
+  }
+
+  const { countryCode, phoneNumber } = parsePhoneInput(
+    rawPhone,
+    typeof rawCountryCode === 'string' ? rawCountryCode : undefined,
+  );
+  const variants = getPhoneLookupVariants(countryCode, phoneNumber);
+
+  const customer = await prisma.customer.findFirst({
+    where: {
+      OR: [
+        { countryCode, phoneNumber },
+        { phoneNumber: { in: variants } },
+      ],
+    },
+    include: {
+      createdBy: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: customer ? 'Customer found' : 'Customer not found',
+    data: customer || null,
+  });
+});
+
 export const CustomerServices = {
   createCustomer,
   getAllCustomers,
   getCustomerById,
+  lookupCustomerByPhone,
   updateCustomer,
   deleteCustomer,
   confirmDeleteCustomer,
   rejectDeleteCustomer,
   restoreCustomer,
 };
+
