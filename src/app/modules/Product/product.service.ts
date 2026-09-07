@@ -4,7 +4,7 @@ import sendResponse from '../../utils/sendResponse';
 import { prisma } from '../../utils/prisma';
 import QueryBuilder from '../../builder/QueryBuilder';
 import AppError from '../../errors/AppError';
-import { NotificationType, UserRoleEnum } from '../../../generated/prisma/client';
+import { NotificationType, ProductUnit, UserRoleEnum } from '../../../generated/prisma/client';
 import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
 import { productSearchableFields } from './product.constant';
@@ -509,8 +509,145 @@ const restoreProduct = catchAsync(async (req, res) => {
   });
 });
 
+interface IBulkProductItem {
+  name: string;
+  unit: ProductUnit;
+  sellingPrice: number;
+  buyingPrice?: number | null;
+  stock?: number;
+  description?: string | null;
+}
+
+const bulkCreateProducts = catchAsync(async (req, res) => {
+  const actor = req.user;
+  const { products } = req.body as { products: IBulkProductItem[] };
+
+  // 1. Check internal duplicates within the batch by trimmed lowercase name and slug
+  const seenSlugs = new Set<string>();
+  const seenNames = new Set<string>();
+
+  for (const item of products) {
+    const trimmedName = item.name.trim();
+    const lowerName = trimmedName.toLowerCase();
+    const slug = generateSlug(trimmedName);
+
+    if (seenNames.has(lowerName) || seenSlugs.has(slug)) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        `Duplicate product name "${trimmedName}" found multiple times in your upload list. Please remove or rename duplicates.`,
+      );
+    }
+    seenNames.add(lowerName);
+    seenSlugs.add(slug);
+  }
+
+  // 2. Query database for existing products with any of these slugs or names
+  const allSlugs = Array.from(seenSlugs);
+  const allNames = products.map((p) => p.name.trim());
+
+  const existingProducts = await prisma.product.findMany({
+    where: {
+      OR: [
+        { slug: { in: allSlugs } },
+        { name: { in: allNames, mode: 'insensitive' } },
+      ],
+    },
+  });
+
+  // Check for conflicts with active products
+  const activeConflicts = existingProducts.filter((p) => !p.isDeleted);
+  if (activeConflicts.length > 0) {
+    const conflictNames = activeConflicts.map((p) => `"${p.name}"`).join(', ');
+    throw new AppError(
+      httpStatus.CONFLICT,
+      `Product ${conflictNames} already exist(s) and is currently active. Please use different name(s) or edit existing product(s).`,
+    );
+  }
+
+  // Build a map of deleted products to restore
+  const deletedMap = new Map<string, typeof existingProducts[0]>();
+  for (const dp of existingProducts.filter((p) => p.isDeleted)) {
+    if (dp.slug) deletedMap.set(dp.slug, dp);
+    deletedMap.set(dp.name.trim().toLowerCase(), dp);
+  }
+
+  // 3. Execute in transaction: restore/update soft-deleted products, create new products
+  const result = await prisma.$transaction(async (tx) => {
+    const createdOrUpdatedList = [];
+
+    for (const item of products) {
+      const trimmedName = item.name.trim();
+      const slug = generateSlug(trimmedName);
+      const lowerName = trimmedName.toLowerCase();
+
+      const existingDeleted = deletedMap.get(slug) || deletedMap.get(lowerName);
+
+      if (existingDeleted) {
+        // Restore and update with new details
+        const restored = await tx.product.update({
+          where: { id: existingDeleted.id },
+          data: {
+            name: trimmedName,
+            slug,
+            unit: item.unit,
+            sellingPrice: item.sellingPrice,
+            buyingPrice: item.buyingPrice ?? null,
+            stock: item.stock ?? 0,
+            description: item.description ?? null,
+            isDeleted: false,
+            isDeleteRequested: false,
+            deleteRequestedById: null,
+            deleteRequestedAt: null,
+            deleteReason: null,
+            updatedById: actor.id,
+          },
+        });
+        createdOrUpdatedList.push(restored);
+      } else {
+        // Create new
+        const created = await tx.product.create({
+          data: {
+            name: trimmedName,
+            slug,
+            unit: item.unit,
+            sellingPrice: item.sellingPrice,
+            buyingPrice: item.buyingPrice ?? null,
+            stock: item.stock ?? 0,
+            description: item.description ?? null,
+            createdById: actor.id,
+            updatedById: actor.id,
+          },
+        });
+        createdOrUpdatedList.push(created);
+      }
+    }
+
+    return createdOrUpdatedList;
+  });
+
+  // Non-blocking activity log
+  logActivity({
+    userId: actor.id,
+    action: 'CREATE_PRODUCT',
+    entityType: 'PRODUCT',
+    req,
+    details: {
+      type: 'BULK_IMPORT',
+      totalCount: result.length,
+      productNames: result.map((p) => p.name),
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    message: `Successfully processed ${result.length} products`,
+    data: result,
+  });
+});
+
 export const ProductServices = {
   createProduct,
+  bulkCreateProducts,
   getAllProducts,
   getProductById,
   updateProduct,

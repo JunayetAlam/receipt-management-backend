@@ -20,6 +20,14 @@ router.post(
   ProductServices.createProduct,
 );
 
+// Bulk create products (Admin, Superadmin, Cashier)
+router.post(
+  '/bulk',
+  auth('ANY'),
+  validateRequest.body(productValidation.bulkCreateProductsSchema),
+  ProductServices.bulkCreateProducts,
+);
+
 // Update product
 router.put(
   '/:id',
