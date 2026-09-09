@@ -11,7 +11,7 @@ import { Request } from 'express';
 import AppError from '../../errors/AppError';
 import catchAsync from '../../utils/catchAsync';
 import sendResponse from '../../utils/sendResponse';
-import { deleteFromMinIO, uploadToMinIO } from '../Upload/uploadToMinio';
+import { deleteFromLocalStorage, uploadToLocalStorage } from '../Upload/uploadToLocalStorage';
 import {
   destroyAllUserSessions,
   destroyUserSessionById,
@@ -239,23 +239,23 @@ const updateProfileImage = catchAsync(async (req: Request, res) => {
   const previousImg = req.user.profilePhoto || '';
 
   if (file) {
-    const location = await uploadToMinIO(file);
+    const location = await uploadToLocalStorage(file, 'user');
     const result = await prisma.user.update({
       where: {
         id,
       },
       data: {
-        profilePhoto: location,
+        profilePhoto: location.Location,
         updatedById: id,
       },
       select: userSelect,
     });
 
     if (previousImg) {
-      deleteFromMinIO(previousImg);
+      deleteFromLocalStorage(previousImg);
     }
 
-    req.user.profilePhoto = location;
+    req.user.profilePhoto = location.Location;
 
     logActivity({
       userId: id,
@@ -273,7 +273,47 @@ const updateProfileImage = catchAsync(async (req: Request, res) => {
     return;
   }
 
-  throw new AppError(httpStatus.NOT_FOUND, 'Please provide image');
+  const shouldRemove =
+    req.body?.remove === true ||
+    req.body?.remove === 'true' ||
+    req.query?.remove === 'true';
+
+  if (shouldRemove) {
+    if (previousImg) {
+      deleteFromLocalStorage(previousImg);
+    }
+
+    const result = await prisma.user.update({
+      where: {
+        id,
+      },
+      data: {
+        profilePhoto: null,
+        updatedById: id,
+      },
+      select: userSelect,
+    });
+
+    req.user.profilePhoto = undefined;
+
+    logActivity({
+      userId: id,
+      action: 'USER_UPDATE_AVATAR',
+      entityType: 'USER',
+      entityId: id,
+      details: { action: 'REMOVED_AVATAR' },
+      req,
+    });
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      message: 'Profile image removed successfully',
+      data: result,
+    });
+    return;
+  }
+
+  throw new AppError(httpStatus.BAD_REQUEST, 'Please provide an image or specify remove');
 });
 
 const updateUserRole = catchAsync(async (req, res) => {

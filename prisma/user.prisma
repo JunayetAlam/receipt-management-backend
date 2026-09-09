@@ -55,6 +55,9 @@ model User {
   receivedPayments ReceiptPayment[] @relation("ReceiptPaymentCreatedBy")
   approvedPayments ReceiptPayment[] @relation("ReceiptPaymentApprovedBy")
 
+  createdShops Shop[] @relation("ShopCreatedBy")
+  updatedShops Shop[] @relation("ShopUpdatedBy")
+
   activityLogs      ActivityLog[]
   notifications     Notification[]     @relation("UserNotifications")
   notificationReads NotificationRead[]

@@ -8,6 +8,7 @@ import { ActivityLogRouters } from '../modules/ActivityLog/activityLog.routes';
 import { ProductRouters } from '../modules/Product/product.routes';
 import { CustomerRouters } from '../modules/Customer/customer.routes';
 import { ReceiptRouters } from '../modules/Receipt/receipt.routes';
+import { ShopRouters } from '../modules/Shop/shop.routes';
 
 const router = express.Router();
 
@@ -31,6 +32,10 @@ const moduleRoutes = [
   {
     path: '/receipts',
     route: ReceiptRouters,
+  },
+  {
+    path: '/shops',
+    route: ShopRouters,
   },
   {
     path: '/assets',

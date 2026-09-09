@@ -10,3 +10,7 @@ node_modules
 .vercel
 dist
 src/generated
+
+assets/*
+!assets/.gitkeep
+!assets/.gitignore

@@ -33,8 +33,11 @@ app.get('/firebase-login', (req: Request, res: Response) => {
 
 app.use('/api/v1', router);
 
-app.use(globalErrorHandler);
+// Static asset serving for device storage
+app.use('/assets', express.static(path.join(process.cwd(), 'assets')));
 app.use('/upload', express.static(path.join(__dirname, 'app', 'upload')));
+
+app.use(globalErrorHandler);
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.status(httpStatus.NOT_FOUND).json({
     success: false,
