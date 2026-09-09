@@ -1,10 +1,39 @@
 import { CookieOptions, Response } from 'express';
 import config from '../../config';
 
-const baseCookieOptions: CookieOptions = {
-  httpOnly: true,
-  secure: true,
-  sameSite: 'none',
+export const getBaseCookieOptions = (): CookieOptions => {
+  const isHttps =
+    process.env.COOKIE_SECURE === 'true' ||
+    Boolean(
+      config.base_url_server?.startsWith('https://') ||
+        config.base_url_client?.startsWith('https://'),
+    );
+
+  const isExplicitlyInsecure =
+    process.env.COOKIE_SECURE === 'false' ||
+    (!isHttps &&
+      Boolean(
+        config.base_url_server?.startsWith('http://') ||
+          config.base_url_client?.startsWith('http://'),
+      ));
+
+  const isSecure =
+    process.env.COOKIE_SECURE !== undefined
+      ? process.env.COOKIE_SECURE === 'true'
+      : isHttps && !isExplicitlyInsecure;
+
+  // On plain HTTP (e.g. VPS with IP address), browsers reject `sameSite: 'none'`
+  // because `none` requires `secure: true`. Thus default to 'lax' on HTTP.
+  const sameSite: CookieOptions['sameSite'] =
+    (process.env.COOKIE_SAMESITE as CookieOptions['sameSite']) ||
+    (isSecure ? 'none' : 'lax');
+
+  return {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite,
+    path: '/',
+  };
 };
 
 const sessionCookieMaxAge = (createdAt: Date) => {
@@ -25,11 +54,11 @@ export const setSessionCookie = (
   }
 
   res.cookie(config.session.cookie_name, sid, {
-    ...baseCookieOptions,
+    ...getBaseCookieOptions(),
     maxAge,
   });
 };
 
 export const clearAuthCookies = (res: Response) => {
-  res.clearCookie(config.session.cookie_name, baseCookieOptions);
+  res.clearCookie(config.session.cookie_name, getBaseCookieOptions());
 };

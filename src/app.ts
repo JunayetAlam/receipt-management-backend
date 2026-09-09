@@ -9,11 +9,33 @@ import { html } from './htmldesign';
 import { firebaseLoginHtml } from './firebase-login.html';
 import config from './config';
 
+const rawClientUrls = config.base_url_client
+  ? config.base_url_client.split(',').map((url) => url.trim())
+  : [];
+
+const allowedOrigins = new Set([
+  ...rawClientUrls,
+  ...rawClientUrls.map((url) => url.replace(/\/+$/, '')),
+  'http://localhost:3000',
+  'http://localhost:3161',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3161',
+].filter(Boolean));
+
 const app: Application = express();
+
+app.set('trust proxy', 1);
 
 app.use(
   cors({
-    origin: [config.base_url_client || 'http://localhost:3000'],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const normalized = origin.replace(/\/+$/, '');
+      if (allowedOrigins.has(origin) || allowedOrigins.has(normalized)) {
+        return callback(null, true);
+      }
+      return callback(null, false);
+    },
     credentials: true,
   }),
 );
