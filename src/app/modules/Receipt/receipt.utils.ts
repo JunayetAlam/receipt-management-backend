@@ -6,6 +6,127 @@ export const roundToTwo = (num: number): number => {
 };
 
 /**
+ * Aggregate quantities by productId for stock adjustments.
+ */
+export const buildProductQtyMap = (
+  items: { productId?: string | null; quantity: number }[],
+): Map<string, number> => {
+  const map = new Map<string, number>();
+  for (const item of items) {
+    if (item.productId) {
+      map.set(
+        item.productId,
+        roundToTwo((map.get(item.productId) || 0) + item.quantity),
+      );
+    }
+  }
+  return map;
+};
+
+/**
+ * Adjust product stock by delta. Positive delta restores stock; negative deducts.
+ * Never clamps to 0 — stock may go negative on oversell.
+ */
+export const adjustProductStock = async (
+  tx: any,
+  productId: string,
+  delta: number,
+  warnings: string[],
+): Promise<void> => {
+  if (delta === 0) return;
+
+  const product = await tx.product.findUnique({ where: { id: productId } });
+  if (!product) return;
+
+  const newStock = roundToTwo(product.stock + delta);
+
+  if (delta < 0 && newStock < 0) {
+    const deducted = Math.abs(delta);
+    warnings.push(
+      `Product "${product.name}" stock was insufficient (available: ${product.stock}, deducted: ${deducted}). Stock is now ${newStock}.`,
+    );
+  }
+
+  await tx.product.update({
+    where: { id: productId },
+    data: { stock: newStock },
+  });
+};
+
+/**
+ * Apply a map of productId -> stock delta (positive restore, negative deduct).
+ */
+export const applyStockDeltaMap = async (
+  tx: any,
+  deltaMap: Map<string, number>,
+  warnings: string[],
+): Promise<void> => {
+  for (const [productId, delta] of deltaMap.entries()) {
+    await adjustProductStock(tx, productId, delta, warnings);
+  }
+};
+
+/** Restore stock for receipt delete / return create (+qty). */
+export const restoreStockForProductItems = async (
+  tx: any,
+  items: { productId?: string | null; quantity: number }[],
+  warnings: string[],
+): Promise<void> => {
+  const qtyMap = buildProductQtyMap(items);
+  for (const [productId, qty] of qtyMap.entries()) {
+    await adjustProductStock(tx, productId, qty, warnings);
+  }
+};
+
+/** Deduct stock for receipt create / restore receipt / return delete (-qty). */
+export const deductStockForProductItems = async (
+  tx: any,
+  items: { productId?: string | null; quantity: number }[],
+  warnings: string[],
+): Promise<void> => {
+  const qtyMap = buildProductQtyMap(items);
+  for (const [productId, qty] of qtyMap.entries()) {
+    await adjustProductStock(tx, productId, -qty, warnings);
+  }
+};
+
+const DUPLICATE_PRODUCT_MESSAGE =
+  'Duplicate product on receipt; each product can only appear once';
+
+/**
+ * Returns an error message if catalog productIds or custom product names
+ * are duplicated within a receipt; otherwise null.
+ * Custom names are compared trimmed and case-insensitive among items without productId.
+ */
+export const getReceiptItemsUniquenessError = (
+  items: { productId?: string | null; productName?: string }[],
+): string | null => {
+  const seenProductIds = new Set<string>();
+  const seenCustomNames = new Set<string>();
+
+  for (const item of items) {
+    if (item.productId) {
+      if (seenProductIds.has(item.productId)) {
+        return DUPLICATE_PRODUCT_MESSAGE;
+      }
+      seenProductIds.add(item.productId);
+      continue;
+    }
+
+    const key = (item.productName || '').trim().toLowerCase();
+    if (!key) continue;
+    if (seenCustomNames.has(key)) {
+      return DUPLICATE_PRODUCT_MESSAGE;
+    }
+    seenCustomNames.add(key);
+  }
+
+  return null;
+};
+
+export const getDuplicateReceiptProductMessage = () => DUPLICATE_PRODUCT_MESSAGE;
+
+/**
  * Generate unique, chronological receipt number: REC-YYYYMMDD-XXXX
  */
 export const generateReceiptNumber = async (prismaClient: any): Promise<string> => {

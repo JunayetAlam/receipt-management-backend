@@ -26,6 +26,8 @@ model Receipt {
 
   items         ReceiptItem[]
   payments      ReceiptPayment[]
+  returnInvoices ReturnInvoice[]
+  returnInvoiceItems ReturnInvoiceItem[]
 
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
@@ -56,6 +58,8 @@ model ReceiptItem {
   quantity     Float
   discount     Float       @default(0)
   totalPrice   Float
+
+  returnInvoiceItems ReturnInvoiceItem[]
 
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt

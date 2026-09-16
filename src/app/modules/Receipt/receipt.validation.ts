@@ -1,8 +1,11 @@
 import { z } from 'zod';
 import { ProductUnit, ReceiptStatus } from '../../../generated/prisma/client';
+import { getDuplicateReceiptProductMessage } from './receipt.utils';
 
 const productUnitEnum = z.nativeEnum(ProductUnit);
 const receiptStatusEnum = z.nativeEnum(ReceiptStatus);
+
+const DUPLICATE_PRODUCT_MESSAGE = getDuplicateReceiptProductMessage();
 
 const receiptItemSchema = z.object({
   productId: z.string().uuid().optional().nullable(),
@@ -13,6 +16,33 @@ const receiptItemSchema = z.object({
   quantity: z.number({ error: 'Quantity is required' }).positive('Quantity must be greater than 0'),
   discount: z.number().min(0, 'Discount cannot be negative').max(100, 'Discount cannot exceed 100%').default(0),
 });
+
+const areReceiptItemsUnique = (
+  items: { productId?: string | null; productName?: string }[],
+): boolean => {
+  const seenProductIds = new Set<string>();
+  const seenCustomNames = new Set<string>();
+
+  for (const item of items) {
+    if (item.productId) {
+      if (seenProductIds.has(item.productId)) return false;
+      seenProductIds.add(item.productId);
+      continue;
+    }
+
+    const key = (item.productName || '').trim().toLowerCase();
+    if (!key) continue;
+    if (seenCustomNames.has(key)) return false;
+    seenCustomNames.add(key);
+  }
+
+  return true;
+};
+
+const uniqueItemsRefine = {
+  message: DUPLICATE_PRODUCT_MESSAGE,
+  path: ['items'] as (string | number)[],
+};
 
 const createReceiptSchema = z.object({
   body: z
@@ -31,23 +61,29 @@ const createReceiptSchema = z.object({
     .refine(data => data.customerId || data.customerPhone, {
       message: 'Either customerId or customerPhone is required',
       path: ['customerId'],
-    }),
+    })
+    .refine(data => areReceiptItemsUnique(data.items), uniqueItemsRefine),
 });
 
 const updateReceiptSchema = z.object({
-  body: z.object({
-    customerId: z.string().uuid().optional().nullable(),
-    countryCode: z.string().regex(/^\+[0-9]{1,4}$/, 'Invalid country code format').optional().nullable(),
-    customerPhone: z.string().min(4).max(20).optional().nullable(),
-    customerName: z.string().min(1).max(100).optional().nullable(),
-    customerAddress: z.string().max(300).optional().nullable(),
-    customerEmail: z.string().email('Invalid email address').optional().nullable().or(z.literal('')),
-    status: receiptStatusEnum.optional(),
-    items: z.array(receiptItemSchema).min(1, 'At least one item is required').optional(),
-    discount: z.number().min(0).optional(),
-    paidAmount: z.number().min(0).optional(),
-    note: z.string().max(500).optional().nullable(),
-  }),
+  body: z
+    .object({
+      customerId: z.string().uuid().optional().nullable(),
+      countryCode: z.string().regex(/^\+[0-9]{1,4}$/, 'Invalid country code format').optional().nullable(),
+      customerPhone: z.string().min(4).max(20).optional().nullable(),
+      customerName: z.string().min(1).max(100).optional().nullable(),
+      customerAddress: z.string().max(300).optional().nullable(),
+      customerEmail: z.string().email('Invalid email address').optional().nullable().or(z.literal('')),
+      status: receiptStatusEnum.optional(),
+      items: z.array(receiptItemSchema).min(1, 'At least one item is required').optional(),
+      discount: z.number().min(0).optional(),
+      paidAmount: z.number().min(0).optional(),
+      note: z.string().max(500).optional().nullable(),
+    })
+    .refine(
+      data => !data.items || areReceiptItemsUnique(data.items),
+      uniqueItemsRefine,
+    ),
 });
 
 const addPaymentSchema = z.object({

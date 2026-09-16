@@ -52,6 +52,10 @@ model User {
   updatedReceipts Receipt[] @relation("ReceiptUpdatedBy")
   deleteRequestedReceipts Receipt[] @relation("ReceiptDeleteRequestedBy")
 
+  createdReturnInvoices ReturnInvoice[] @relation("ReturnInvoiceCreatedBy")
+  updatedReturnInvoices ReturnInvoice[] @relation("ReturnInvoiceUpdatedBy")
+  deleteRequestedReturnInvoices ReturnInvoice[] @relation("ReturnInvoiceDeleteRequestedBy")
+
   receivedPayments ReceiptPayment[] @relation("ReceiptPaymentCreatedBy")
   approvedPayments ReceiptPayment[] @relation("ReceiptPaymentApprovedBy")
 

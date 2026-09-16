@@ -9,8 +9,12 @@ import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
 import { receiptSearchableFields } from './receipt.constant';
 import {
+  applyStockDeltaMap,
   calculateReceiptTotals,
+  deductStockForProductItems,
   generateReceiptNumber,
+  getReceiptItemsUniquenessError,
+  restoreStockForProductItems,
   roundToTwo,
 } from './receipt.utils';
 import { parsePhoneInput, getPhoneLookupVariants } from '../../utils/phone';
@@ -122,6 +126,11 @@ const createReceipt = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, 'Valid customerId or customerPhone is required');
   }
 
+  const duplicateProductError = getReceiptItemsUniquenessError(items);
+  if (duplicateProductError) {
+    throw new AppError(httpStatus.BAD_REQUEST, duplicateProductError);
+  }
+
   // 2. Fetch linked products from DB if productId is provided
   const productIds = items
     .map((it: { productId?: string }) => it.productId)
@@ -166,40 +175,8 @@ const createReceipt = catchAsync(async (req, res) => {
     // Generate unique receipt number
     const receiptNumber = await generateReceiptNumber(tx);
 
-    // Check and deduct inventory stock (aggregated by productId for multi-row items)
-    const productQtyMap = new Map<string, number>();
-    for (const item of calculatedItems) {
-      if (item.productId) {
-        productQtyMap.set(
-          item.productId,
-          roundToTwo((productQtyMap.get(item.productId) || 0) + item.quantity),
-        );
-      }
-    }
-
-    for (const [productId, totalQty] of productQtyMap.entries()) {
-      const product = await tx.product.findUnique({
-        where: { id: productId },
-      });
-
-      if (product) {
-        let newStock = 0;
-        if (product.stock >= totalQty) {
-          newStock = roundToTwo(product.stock - totalQty);
-        } else {
-          // Stock shortage: clamp to 0 and record unified warning
-          newStock = 0;
-          warnings.push(
-            `Product "${product.name}" stock was insufficient (available: ${product.stock}, total ordered: ${totalQty}). Stock has been set to 0.`,
-          );
-        }
-
-        await tx.product.update({
-          where: { id: product.id },
-          data: { stock: newStock },
-        });
-      }
-    }
+    // Deduct inventory stock (aggregated by productId; may go negative on oversell)
+    await deductStockForProductItems(tx, calculatedItems, warnings);
 
     // Create Receipt header
     const receipt = await tx.receipt.create({
@@ -426,6 +403,16 @@ const getReceiptById = catchAsync(async (req, res) => {
         },
         orderBy: { createdAt: 'asc' },
       },
+      returnInvoices: {
+        where: { isDeleted: false },
+        include: {
+          items: true,
+          createdBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      },
       createdBy: {
         select: { id: true, firstName: true, lastName: true, email: true },
       },
@@ -442,10 +429,32 @@ const getReceiptById = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
   }
 
+  const returnedQtyMap = new Map<string, number>();
+  for (const ret of receipt.returnInvoices) {
+    for (const item of ret.items) {
+      returnedQtyMap.set(
+        item.receiptItemId,
+        roundToTwo((returnedQtyMap.get(item.receiptItemId) || 0) + item.quantity),
+      );
+    }
+  }
+
+  const itemsWithReturnMeta = receipt.items.map(it => {
+    const alreadyReturned = returnedQtyMap.get(it.id) || 0;
+    return {
+      ...it,
+      alreadyReturned,
+      remainingReturnable: roundToTwo(Math.max(0, it.quantity - alreadyReturned)),
+    };
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Receipt retrieved successfully',
-    data: receipt,
+    data: {
+      ...receipt,
+      items: itemsWithReturnMeta,
+    },
   });
 });
 
@@ -473,6 +482,18 @@ const updateReceipt = catchAsync(async (req, res) => {
       httpStatus.FORBIDDEN,
       'Approved receipts are locked and cannot be edited by cashiers. Please contact an administrator.',
     );
+  }
+
+  if (payload.items && Array.isArray(payload.items)) {
+    const activeReturnCount = await prisma.returnInvoice.count({
+      where: { receiptId: id, isDeleted: false },
+    });
+    if (activeReturnCount > 0) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        'Cannot change receipt items while return invoices exist for this receipt. Delete or adjust returns first.',
+      );
+    }
   }
 
   // Resolve customer if customerId or customerPhone provided
@@ -557,6 +578,13 @@ const updateReceipt = catchAsync(async (req, res) => {
     customerIdToUpdate = cust.id;
   }
 
+  if (payload.items && Array.isArray(payload.items)) {
+    const duplicateProductError = getReceiptItemsUniquenessError(payload.items);
+    if (duplicateProductError) {
+      throw new AppError(httpStatus.BAD_REQUEST, duplicateProductError);
+    }
+  }
+
   const warnings: string[] = [];
 
   const updatedResult = await prisma.$transaction(async tx => {
@@ -589,40 +617,20 @@ const updateReceipt = catchAsync(async (req, res) => {
         }
       });
 
-      // Find all unique product IDs involved
+      // Stock delta: positive = restore, negative = deduct more
+      const stockDeltaMap = new Map<string, number>();
       const allProductIds = new Set([...oldQtyMap.keys(), ...newQtyMap.keys()]);
 
       for (const productId of allProductIds) {
         const oldQty = oldQtyMap.get(productId) || 0;
         const newQty = newQtyMap.get(productId) || 0;
-        const delta = roundToTwo(newQty - oldQty); // positive = sold more, negative = returned/reduced
-
-        if (delta !== 0) {
-          const product = await tx.product.findUnique({ where: { id: productId } });
-          if (product) {
-            let newStock = 0;
-            if (delta > 0) {
-              // Increasing quantity in receipt -> deduct more stock
-              if (product.stock >= delta) {
-                newStock = roundToTwo(product.stock - delta);
-              } else {
-                newStock = 0;
-                warnings.push(
-                  `Product "${product.name}" stock was insufficient (available: ${product.stock}, additional needed: ${delta}). Stock set to 0.`,
-                );
-              }
-            } else {
-              // Decreasing quantity or removed item -> restore stock
-              newStock = roundToTwo(product.stock + Math.abs(delta));
-            }
-
-            await tx.product.update({
-              where: { id: productId },
-              data: { stock: newStock },
-            });
-          }
+        const stockDelta = roundToTwo(oldQty - newQty);
+        if (stockDelta !== 0) {
+          stockDeltaMap.set(productId, stockDelta);
         }
       }
+
+      await applyStockDeltaMap(tx, stockDeltaMap, warnings);
 
       // Delete old items and insert updated items
       await tx.receiptItem.deleteMany({ where: { receiptId: id } });
@@ -714,20 +722,22 @@ const deleteReceipt = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
   }
 
+  const activeReturnCount = await prisma.returnInvoice.count({
+    where: { receiptId: id, isDeleted: false },
+  });
+  if (activeReturnCount > 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Cannot delete this receipt while return invoices exist. Delete the return invoices first.',
+    );
+  }
+
   const isAdmin = actor.role === UserRoleEnum.SUPERADMIN || actor.role === UserRoleEnum.ADMIN;
 
   if (isAdmin) {
     // Immediate soft delete by Admin with inventory restoration
     const result = await prisma.$transaction(async tx => {
-      // Restore inventory stock for each product in the receipt
-      for (const item of receipt.items) {
-        if (item.productId) {
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { stock: { increment: item.quantity } },
-          });
-        }
-      }
+      await restoreStockForProductItems(tx, receipt.items, []);
 
       return tx.receipt.update({
         where: { id },
@@ -813,16 +823,18 @@ const confirmDeleteReceipt = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
   }
 
+  const activeReturnCount = await prisma.returnInvoice.count({
+    where: { receiptId: id, isDeleted: false },
+  });
+  if (activeReturnCount > 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Cannot delete this receipt while return invoices exist. Delete the return invoices first.',
+    );
+  }
+
   const result = await prisma.$transaction(async tx => {
-    // Restore product stocks
-    for (const item of receipt.items) {
-      if (item.productId) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { stock: { increment: item.quantity } },
-        });
-      }
-    }
+    await restoreStockForProductItems(tx, receipt.items, []);
 
     return tx.receipt.update({
       where: { id },
@@ -931,28 +943,7 @@ const restoreReceipt = catchAsync(async (req, res) => {
   const warnings: string[] = [];
 
   const result = await prisma.$transaction(async tx => {
-    // Re-deduct product stocks
-    for (const item of receipt.items) {
-      if (item.productId) {
-        const product = await tx.product.findUnique({ where: { id: item.productId } });
-        if (product) {
-          let newStock = 0;
-          if (product.stock >= item.quantity) {
-            newStock = roundToTwo(product.stock - item.quantity);
-          } else {
-            newStock = 0;
-            warnings.push(
-              `Product "${product.name}" stock was insufficient upon restore (available: ${product.stock}, ordered: ${item.quantity}). Stock set to 0.`,
-            );
-          }
-
-          await tx.product.update({
-            where: { id: product.id },
-            data: { stock: newStock },
-          });
-        }
-      }
-    }
+    await deductStockForProductItems(tx, receipt.items, warnings);
 
     return tx.receipt.update({
       where: { id },
