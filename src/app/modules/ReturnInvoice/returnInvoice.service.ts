@@ -98,7 +98,12 @@ const returnInvoiceInclude = {
   },
 } as const;
 
-type ReturnPayloadItem = { receiptItemId: string; quantity: number };
+type ReturnPayloadItem = {
+  receiptItemId: string;
+  quantity: number;
+  sellingPrice?: number;
+  discount?: number;
+};
 
 const enrichReturnItemsFromReceipt = async (
   receiptId: string,
@@ -154,9 +159,9 @@ const enrichReturnItemsFromReceipt = async (
       productId: source.productId,
       productName: source.productName,
       unit: source.unit,
-      sellingPrice: source.sellingPrice,
+      sellingPrice: it.sellingPrice ?? source.sellingPrice,
       quantity: it.quantity,
-      discount: source.discount,
+      discount: it.discount ?? source.discount,
     };
   });
 
@@ -1151,6 +1156,8 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
     returnInvoice.items.map(it => ({
       receiptItemId: it.receiptItemId,
       quantity: it.quantity,
+      sellingPrice: it.sellingPrice,
+      discount: it.discount,
     })),
   );
 
