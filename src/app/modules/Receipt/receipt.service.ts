@@ -18,6 +18,10 @@ import {
   roundToTwo,
 } from './receipt.utils';
 import { parsePhoneInput, getPhoneLookupVariants } from '../../utils/phone';
+import {
+  deriveMoneyForReturnInvoice,
+  withDerivedReturnMoney,
+} from '../ReturnInvoice/returnInvoice.utils';
 
 /**
  * Create a new receipt with automatic pricing, per-item percentage discount,
@@ -448,12 +452,20 @@ const getReceiptById = catchAsync(async (req, res) => {
     };
   });
 
+  const moneyCache = new Map();
+  const returnInvoicesWithMoney = [];
+  for (const ret of receipt.returnInvoices) {
+    const money = await deriveMoneyForReturnInvoice(prisma, ret.id, moneyCache);
+    returnInvoicesWithMoney.push(withDerivedReturnMoney(ret, money));
+  }
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Receipt retrieved successfully',
     data: {
       ...receipt,
       items: itemsWithReturnMeta,
+      returnInvoices: returnInvoicesWithMoney,
     },
   });
 });

@@ -8,6 +8,4 @@ export const returnInvoiceFilterableFields = [
   'isDeleteRequested',
   'startDate',
   'endDate',
-  'minTotal',
-  'maxTotal',
 ];

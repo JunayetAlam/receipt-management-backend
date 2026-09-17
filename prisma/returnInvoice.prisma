@@ -1,18 +1,19 @@
 model ReturnInvoice {
-  id            String        @id @default(uuid())
-  returnNumber  String        @unique
+  id           String @id @default(uuid())
+  returnNumber String @unique
 
-  receiptId     String
-  receipt       Receipt       @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  receiptId String
+  receipt   Receipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
 
-  subTotal         Float         @default(0)
-  discount         Float         @default(0)
-  totalAmount      Float         @default(0)
-  refundedAmount   Float         @default(0)
-  dueRefundAmount  Float         @default(0)
-  status           ReceiptStatus @default(PENDING)
-  note             String?
-  isDeleted        Boolean       @default(false)
+  previousReturnInvoiceId String?
+  previousReturnInvoice   ReturnInvoice?  @relation("ReturnInvoiceChain", fields: [previousReturnInvoiceId], references: [id], onDelete: SetNull)
+  nextReturnInvoices      ReturnInvoice[] @relation("ReturnInvoiceChain")
+
+  discount       Float         @default(0)
+  refundedAmount Float         @default(0)
+  status         ReceiptStatus @default(PENDING)
+  note           String?
+  isDeleted      Boolean       @default(false)
 
   isDeleteRequested   Boolean   @default(false)
   deleteRequestedById String?
@@ -20,18 +21,19 @@ model ReturnInvoice {
   deleteRequestedAt   DateTime?
   deleteReason        String?
 
-  createdById   String?
-  updatedById   String?
-  createdBy     User?         @relation("ReturnInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  updatedBy     User?         @relation("ReturnInvoiceUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdById String?
+  updatedById String?
+  createdBy   User?   @relation("ReturnInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedBy   User?   @relation("ReturnInvoiceUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
 
-  items         ReturnInvoiceItem[]
+  items ReturnInvoiceItem[]
 
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([returnNumber])
   @@index([receiptId])
+  @@index([previousReturnInvoiceId])
   @@index([status])
   @@index([isDeleted])
   @@index([isDeleteRequested])
@@ -42,28 +44,28 @@ model ReturnInvoice {
 }
 
 model ReturnInvoiceItem {
-  id               String        @id @default(uuid())
-  returnInvoiceId  String
-  returnInvoice    ReturnInvoice @relation(fields: [returnInvoiceId], references: [id], onDelete: Cascade)
+  id              String        @id @default(uuid())
+  returnInvoiceId String
+  returnInvoice   ReturnInvoice @relation(fields: [returnInvoiceId], references: [id], onDelete: Cascade)
 
-  receiptId        String
-  receipt          Receipt       @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  receiptId String
+  receipt   Receipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
 
-  receiptItemId    String
-  receiptItem      ReceiptItem   @relation(fields: [receiptItemId], references: [id], onDelete: Restrict)
+  receiptItemId String
+  receiptItem   ReceiptItem @relation(fields: [receiptItemId], references: [id], onDelete: Restrict)
 
-  productId        String?
-  product          Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 
-  productName      String
-  unit             ProductUnit   @default(PIECE)
-  sellingPrice     Float
-  quantity         Float
-  discount         Float         @default(0)
-  totalPrice       Float
+  productName  String
+  unit         ProductUnit @default(PIECE)
+  sellingPrice Float
+  quantity     Float
+  discount     Float       @default(0)
+  totalPrice   Float
 
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([returnInvoiceId, receiptItemId])
   @@index([returnInvoiceId])

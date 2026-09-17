@@ -15,11 +15,38 @@ import {
 } from '../Receipt/receipt.utils';
 import { returnInvoiceSearchableFields } from './returnInvoice.constant';
 import {
-  calculateReturnTotals,
+  deriveMoneyForReturnInvoice,
+  deriveReceiptSettlement,
+  deriveReturnMoney,
   generateReturnNumber,
+  getLatestActiveReturn,
+  getRefundOverCapMessage,
   getReturnItemsUniquenessError,
   getReturnedQtyMap,
+  hasNewerActiveReturn,
+  isLatestActiveReturn,
+  sumActiveReturnMoneyOnReceipt,
+  sumAncestorReturnMoney,
+  withDerivedReturnMoney,
 } from './returnInvoice.utils';
+
+const previousReturnInclude = {
+  select: {
+    id: true,
+    returnNumber: true,
+    discount: true,
+    refundedAmount: true,
+    createdAt: true,
+    items: {
+      select: {
+        sellingPrice: true,
+        quantity: true,
+        discount: true,
+        totalPrice: true,
+      },
+    },
+  },
+} as const;
 
 const returnInvoiceInclude = {
   receipt: {
@@ -42,6 +69,7 @@ const returnInvoiceInclude = {
       },
     },
   },
+  previousReturnInvoice: previousReturnInclude,
   items: {
     include: {
       product: {
@@ -72,10 +100,6 @@ const returnInvoiceInclude = {
 
 type ReturnPayloadItem = { receiptItemId: string; quantity: number };
 
-/**
- * Resolve payload items against the source receipt, enforce remaining qty caps,
- * and enrich line fields from the original receipt items.
- */
 const enrichReturnItemsFromReceipt = async (
   receiptId: string,
   items: ReturnPayloadItem[],
@@ -139,8 +163,112 @@ const enrichReturnItemsFromReceipt = async (
   return { receipt, enriched };
 };
 
+const assertLatestForMutation = async (
+  returnInvoice: { id: string; receiptId: string; isDeleted?: boolean },
+  action: 'edited' | 'deleted',
+) => {
+  const latest = await isLatestActiveReturn(prisma, returnInvoice);
+  if (!latest) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Only the latest return invoice on this receipt can be ${action}`,
+    );
+  }
+};
+
+const hydrateReturnInvoice = async <
+  T extends {
+    id: string;
+    previousReturnInvoiceId?: string | null;
+    receipt?: {
+      totalAmount?: number;
+      paidAmount?: number;
+    } | null;
+  },
+>(
+  invoice: T,
+) => {
+  const cache = new Map();
+  const money = await deriveMoneyForReturnInvoice(prisma, invoice.id, cache);
+  const hydrated = withDerivedReturnMoney(invoice, money);
+
+  const prev = (invoice as any).previousReturnInvoice;
+  if (prev?.id) {
+    const prevMoney = await deriveMoneyForReturnInvoice(prisma, prev.id, cache);
+    (hydrated as any).previousReturnInvoice = withDerivedReturnMoney(prev, prevMoney);
+  }
+
+  const ancestorMoney = await sumAncestorReturnMoney(
+    prisma,
+    invoice.previousReturnInvoiceId,
+    cache,
+  );
+  // Position before this return (ancestors only) — UI shows only due/refundable
+  const beforeThis = deriveReceiptSettlement({
+    receiptTotal: invoice.receipt?.totalAmount ?? 0,
+    paidAmount: invoice.receipt?.paidAmount ?? 0,
+    creditsBefore: ancestorMoney.credits,
+    thisCredit: 0,
+    refundedBefore: ancestorMoney.refunded,
+    thisRefunded: 0,
+  });
+  const afterThis = deriveReceiptSettlement({
+    receiptTotal: invoice.receipt?.totalAmount ?? 0,
+    paidAmount: invoice.receipt?.paidAmount ?? 0,
+    creditsBefore: ancestorMoney.credits,
+    thisCredit: money.totalAmount,
+    refundedBefore: ancestorMoney.refunded,
+    thisRefunded: money.refundedAmount,
+  });
+
+  return {
+    ...hydrated,
+    previousPosition: {
+      netDue: beforeThis.netDue,
+      netRefundable: beforeThis.netRefundable,
+    },
+    currentPosition: {
+      netDue: afterThis.netDue,
+      netRefundable: afterThis.netRefundable,
+    },
+  };
+};
+
+const hydrateReturnInvoiceList = async <T extends { id: string; receiptId: string; createdAt: Date; isDeleted: boolean }>(
+  rows: T[],
+) => {
+  if (!rows.length) return [];
+
+  const cache = new Map();
+  const receiptIds = [...new Set(rows.map(r => r.receiptId))];
+
+  const latestByReceipt = new Map<string, string>();
+  await Promise.all(
+    receiptIds.map(async receiptId => {
+      const latest = await getLatestActiveReturn(prisma, receiptId, { select: { id: true } });
+      if (latest) latestByReceipt.set(receiptId, latest.id);
+    }),
+  );
+
+  const result = [];
+  for (const row of rows) {
+    const money = await deriveMoneyForReturnInvoice(prisma, row.id, cache);
+    const isLatest = !row.isDeleted && latestByReceipt.get(row.receiptId) === row.id;
+    const canRestore =
+      row.isDeleted && !(await hasNewerActiveReturn(prisma, row));
+
+    result.push({
+      ...withDerivedReturnMoney(row, money),
+      isLatest,
+      canRestore,
+    });
+  }
+  return result;
+};
+
 /**
  * Create a return invoice under a source receipt. Restores product stock.
+ * Money fields are derived from product lines + previous tip due (not persisted).
  */
 const createReturnInvoice = catchAsync(async (req, res) => {
   const actor = req.user;
@@ -148,36 +276,68 @@ const createReturnInvoice = catchAsync(async (req, res) => {
     receiptId,
     items,
     discount = 0,
-    refundedAmount = 0,
     note,
   } = req.body;
+  const refundedAmountInput = req.body.refundedAmount;
 
   const { receipt, enriched } = await enrichReturnItemsFromReceipt(receiptId, items);
 
+  const previous = await getLatestActiveReturn(prisma, receiptId, {
+    include: {
+      items: {
+        select: {
+          sellingPrice: true,
+          quantity: true,
+          discount: true,
+          totalPrice: true,
+        },
+      },
+    },
+  });
+
+  let previousDueAmount = 0;
+  if (previous) {
+    const prevMoney = await deriveMoneyForReturnInvoice(prisma, previous.id);
+    previousDueAmount = prevMoney.dueRefundAmount;
+  }
+
+  const creditPreview = deriveReturnMoney(enriched, discount, 0, previousDueAmount);
+  const finalRefunded =
+    refundedAmountInput !== undefined && refundedAmountInput !== null
+      ? roundToTwo(Number(refundedAmountInput))
+      : creditPreview.totalAmount;
+
+  const overCap = getRefundOverCapMessage(
+    previousDueAmount,
+    creditPreview.totalAmount,
+    finalRefunded,
+  );
+  if (overCap) {
+    throw new AppError(httpStatus.BAD_REQUEST, overCap);
+  }
+
   const {
     calculatedItems,
-    subTotal,
     discount: totalDiscount,
     totalAmount,
-    refundedAmount: finalRefunded,
+    refundedAmount: settledRefunded,
     dueRefundAmount,
-  } = calculateReturnTotals(enriched, discount, refundedAmount);
+    subTotal,
+    previousDueAmount: settledPreviousDue,
+  } = deriveReturnMoney(enriched, discount, finalRefunded, previousDueAmount);
 
   const result = await prisma.$transaction(async tx => {
     const returnNumber = await generateReturnNumber(tx);
 
-    // Returning goods restores inventory
     await restoreStockForProductItems(tx, calculatedItems, []);
 
     const returnInvoice = await tx.returnInvoice.create({
       data: {
         returnNumber,
         receiptId: receipt.id,
-        subTotal,
+        previousReturnInvoiceId: previous?.id || null,
         discount: totalDiscount,
-        totalAmount,
-        refundedAmount: finalRefunded,
-        dueRefundAmount,
+        refundedAmount: settledRefunded,
         status: ReceiptStatus.PENDING,
         note: note || null,
         createdById: actor.id,
@@ -206,6 +366,8 @@ const createReturnInvoice = catchAsync(async (req, res) => {
     });
   });
 
+  const hydrated = result ? await hydrateReturnInvoice(result) : null;
+
   logActivity({
     userId: actor.id,
     action: 'CREATE_RETURN_INVOICE',
@@ -217,6 +379,9 @@ const createReturnInvoice = catchAsync(async (req, res) => {
       receiptId: receipt.id,
       receiptNumber: receipt.receiptNumber,
       totalAmount,
+      previousDueAmount: settledPreviousDue,
+      dueRefundAmount,
+      previousReturnInvoiceId: previous?.id || null,
       itemCount: calculatedItems.length,
     },
   });
@@ -239,7 +404,11 @@ const createReturnInvoice = catchAsync(async (req, res) => {
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     message: 'Return invoice created successfully',
-    data: { returnInvoice: result },
+    data: {
+      returnInvoice: hydrated
+        ? { ...hydrated, isLatest: true, canRestore: false }
+        : null,
+    },
   });
 });
 
@@ -274,11 +443,9 @@ const getAllReturnInvoices = catchAsync(async (req, res) => {
       id: true,
       returnNumber: true,
       receiptId: true,
-      subTotal: true,
+      previousReturnInvoiceId: true,
       discount: true,
-      totalAmount: true,
       refundedAmount: true,
-      dueRefundAmount: true,
       status: true,
       note: true,
       isDeleted: true,
@@ -287,6 +454,14 @@ const getAllReturnInvoices = catchAsync(async (req, res) => {
       deleteReason: true,
       createdAt: true,
       updatedAt: true,
+      items: {
+        select: {
+          sellingPrice: true,
+          quantity: true,
+          discount: true,
+          totalPrice: true,
+        },
+      },
       receipt: {
         select: {
           id: true,
@@ -317,10 +492,13 @@ const getAllReturnInvoices = catchAsync(async (req, res) => {
     .paginate()
     .execute();
 
+  const data = await hydrateReturnInvoiceList(result.data || []);
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Return invoices retrieved successfully',
     ...result,
+    data,
   });
 });
 
@@ -336,15 +514,24 @@ const getReturnInvoiceById = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
   }
 
+  const hydrated = await hydrateReturnInvoice(returnInvoice);
+  const isLatest = await isLatestActiveReturn(prisma, returnInvoice);
+  const canRestore =
+    returnInvoice.isDeleted && !(await hasNewerActiveReturn(prisma, returnInvoice));
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Return invoice retrieved successfully',
-    data: returnInvoice,
+    data: {
+      ...hydrated,
+      isLatest,
+      canRestore,
+    },
   });
 });
 
 /**
- * Returnable lines for a receipt (original qty, already returned, remaining).
+ * Returnable lines for a receipt + previous (latest active) return money summary.
  */
 const getReturnableItemsByReceipt = catchAsync(async (req, res) => {
   const { receiptId } = req.params;
@@ -401,6 +588,75 @@ const getReturnableItemsByReceipt = catchAsync(async (req, res) => {
     };
   });
 
+  // When editing, previous tip is the latest active excluding the invoice being edited
+  let previousReturn = null as null | Record<string, unknown>;
+  const latestActive = await getLatestActiveReturn(prisma, receiptId, {
+    include: {
+      items: {
+        select: {
+          sellingPrice: true,
+          quantity: true,
+          discount: true,
+          totalPrice: true,
+        },
+      },
+    },
+  });
+
+  if (latestActive && latestActive.id !== excludeReturnInvoiceId) {
+    const money = await deriveMoneyForReturnInvoice(prisma, latestActive.id);
+    previousReturn = {
+      id: latestActive.id,
+      returnNumber: latestActive.returnNumber,
+      ...money,
+      createdAt: latestActive.createdAt,
+    };
+  } else if (excludeReturnInvoiceId) {
+    // Editing the tip: show that invoice's linked previous as context
+    const editing = await prisma.returnInvoice.findUnique({
+      where: { id: excludeReturnInvoiceId },
+      select: { previousReturnInvoiceId: true },
+    });
+    if (editing?.previousReturnInvoiceId) {
+      const prev = await prisma.returnInvoice.findUnique({
+        where: { id: editing.previousReturnInvoiceId },
+        include: {
+          items: {
+            select: {
+              sellingPrice: true,
+              quantity: true,
+              discount: true,
+              totalPrice: true,
+            },
+          },
+        },
+      });
+      if (prev) {
+        const money = await deriveMoneyForReturnInvoice(prisma, prev.id);
+        previousReturn = {
+          id: prev.id,
+          returnNumber: prev.returnNumber,
+          ...money,
+          createdAt: prev.createdAt,
+        };
+      }
+    }
+  }
+
+  const priorMoney = await sumActiveReturnMoneyOnReceipt(
+    prisma,
+    receiptId,
+    excludeReturnInvoiceId,
+  );
+  const beforeThis = deriveReceiptSettlement({
+    receiptTotal: receipt.totalAmount,
+    paidAmount: receipt.paidAmount,
+    creditsBefore: priorMoney.credits,
+    thisCredit: 0,
+    refundedBefore: priorMoney.refunded,
+    thisRefunded: 0,
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Returnable receipt items retrieved successfully',
@@ -414,6 +670,14 @@ const getReturnableItemsByReceipt = catchAsync(async (req, res) => {
         dueAmount: receipt.dueAmount,
       },
       items,
+      previousReturn,
+      previousDueAmount: previousReturn
+        ? (previousReturn.dueRefundAmount as number)
+        : 0,
+      previousPosition: {
+        netDue: beforeThis.netDue,
+        netRefundable: beforeThis.netRefundable,
+      },
     },
   });
 });
@@ -432,6 +696,8 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found or is deleted');
   }
 
+  await assertLatestForMutation(existing, 'edited');
+
   if (
     existing.status === ReceiptStatus.APPROVED &&
     actor.role === UserRoleEnum.CASHIER
@@ -442,12 +708,18 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
     );
   }
 
+  let previousDueAmount = 0;
+  if (existing.previousReturnInvoiceId) {
+    const prevMoney = await deriveMoneyForReturnInvoice(
+      prisma,
+      existing.previousReturnInvoiceId,
+    );
+    previousDueAmount = prevMoney.dueRefundAmount;
+  }
+
   const warnings: string[] = [];
 
   const updatedResult = await prisma.$transaction(async tx => {
-    let subTotal = existing.subTotal;
-    let totalAmount = existing.totalAmount;
-    let dueRefundAmount = existing.dueRefundAmount;
     const finalDiscount =
       payload.discount !== undefined ? roundToTwo(payload.discount) : existing.discount;
     let finalRefunded =
@@ -462,13 +734,23 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
         existing.id,
       );
 
-      const totals = calculateReturnTotals(enriched, finalDiscount, finalRefunded);
-      subTotal = totals.subTotal;
-      totalAmount = totals.totalAmount;
+      const totals = deriveReturnMoney(
+        enriched,
+        finalDiscount,
+        finalRefunded,
+        previousDueAmount,
+      );
       finalRefunded = totals.refundedAmount;
-      dueRefundAmount = totals.dueRefundAmount;
 
-      // Stock delta: more returned => restore more; less returned => deduct back
+      const overCap = getRefundOverCapMessage(
+        previousDueAmount,
+        totals.totalAmount,
+        finalRefunded,
+      );
+      if (overCap) {
+        throw new AppError(httpStatus.BAD_REQUEST, overCap);
+      }
+
       const oldQtyMap = new Map<string, number>();
       existing.items.forEach(it => {
         if (it.productId) {
@@ -494,7 +776,7 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
       for (const productId of allProductIds) {
         const oldQty = oldQtyMap.get(productId) || 0;
         const newQty = newQtyMap.get(productId) || 0;
-        const stockDelta = roundToTwo(newQty - oldQty); // positive = more return = restore stock
+        const stockDelta = roundToTwo(newQty - oldQty);
         if (stockDelta !== 0) {
           stockDeltaMap.set(productId, stockDelta);
         }
@@ -518,8 +800,7 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
         })),
       });
     } else if (payload.discount !== undefined || payload.refundedAmount !== undefined) {
-      // Recalculate header money from existing items if only money fields change
-      const totals = calculateReturnTotals(
+      const totals = deriveReturnMoney(
         existing.items.map(it => ({
           receiptItemId: it.receiptItemId,
           receiptId: it.receiptId,
@@ -532,11 +813,18 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
         })),
         finalDiscount,
         finalRefunded,
+        previousDueAmount,
       );
-      subTotal = totals.subTotal;
-      totalAmount = totals.totalAmount;
       finalRefunded = totals.refundedAmount;
-      dueRefundAmount = totals.dueRefundAmount;
+
+      const overCap = getRefundOverCapMessage(
+        previousDueAmount,
+        totals.totalAmount,
+        finalRefunded,
+      );
+      if (overCap) {
+        throw new AppError(httpStatus.BAD_REQUEST, overCap);
+      }
     }
 
     const statusToSet =
@@ -549,11 +837,8 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
     return tx.returnInvoice.update({
       where: { id },
       data: {
-        subTotal,
         discount: finalDiscount,
-        totalAmount,
         refundedAmount: finalRefunded,
-        dueRefundAmount,
         note: payload.note !== undefined ? payload.note : undefined,
         ...(statusToSet !== undefined ? { status: statusToSet } : {}),
         updatedById: actor.id,
@@ -561,6 +846,8 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
       include: returnInvoiceInclude,
     });
   });
+
+  const hydrated = await hydrateReturnInvoice(updatedResult);
 
   logActivity({
     userId: actor.id,
@@ -570,7 +857,8 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
     req,
     details: {
       returnNumber: existing.returnNumber,
-      totalAmount: updatedResult.totalAmount,
+      totalAmount: hydrated.totalAmount,
+      dueRefundAmount: hydrated.dueRefundAmount,
     },
   });
 
@@ -578,7 +866,7 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
     statusCode: httpStatus.OK,
     message: 'Return invoice updated successfully',
     data: {
-      returnInvoice: updatedResult,
+      returnInvoice: { ...hydrated, isLatest: true, canRestore: false },
       warnings,
     },
   });
@@ -627,18 +915,16 @@ const updateReturnInvoiceStatus = catchAsync(async (req, res) => {
     });
   }
 
+  const hydrated = await hydrateReturnInvoice(updated);
+  const isLatest = await isLatestActiveReturn(prisma, updated);
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: `Return invoice status updated to ${status}`,
-    data: updated,
+    data: { ...hydrated, isLatest, canRestore: false },
   });
 });
 
-/**
- * Soft-delete return invoice.
- * Admin: immediate delete and reverse stock (deduct returned qty back out).
- * Cashier: deletion request.
- */
 const deleteReturnInvoice = catchAsync(async (req, res) => {
   const { id } = req.params;
   const actor = req.user;
@@ -652,6 +938,10 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
   if (!returnInvoice || returnInvoice.isDeleted) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
   }
+
+  await assertLatestForMutation(returnInvoice, 'deleted');
+
+  const money = await deriveMoneyForReturnInvoice(prisma, returnInvoice.id);
 
   const isAdmin =
     actor.role === UserRoleEnum.SUPERADMIN || actor.role === UserRoleEnum.ADMIN;
@@ -678,14 +968,15 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
       req,
       details: {
         returnNumber: returnInvoice.returnNumber,
-        totalAmount: returnInvoice.totalAmount,
+        totalAmount: money.totalAmount,
+        dueRefundAmount: money.dueRefundAmount,
       },
     });
 
     sendResponse(res, {
       statusCode: httpStatus.OK,
       message: 'Return invoice deleted successfully and inventory has been adjusted',
-      data: { returnInvoice: result, warnings },
+      data: { returnInvoice: withDerivedReturnMoney(result, money), warnings },
     });
   } else {
     if (returnInvoice.isDeleteRequested) {
@@ -725,7 +1016,7 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
     sendResponse(res, {
       statusCode: httpStatus.OK,
       message: 'Return invoice deletion request submitted to admin for confirmation',
-      data: result,
+      data: withDerivedReturnMoney(result, money),
     });
   }
 });
@@ -742,6 +1033,8 @@ const confirmDeleteReturnInvoice = catchAsync(async (req, res) => {
   if (!returnInvoice || returnInvoice.isDeleted) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
   }
+
+  await assertLatestForMutation(returnInvoice, 'deleted');
 
   const warnings: string[] = [];
   const result = await prisma.$transaction(async tx => {
@@ -831,6 +1124,7 @@ const rejectDeleteReturnInvoice = catchAsync(async (req, res) => {
 
 /**
  * Restore soft-deleted return invoice and re-apply stock restore.
+ * Blocked when a newer active return already exists on the receipt.
  */
 const restoreReturnInvoice = catchAsync(async (req, res) => {
   const { id } = req.params;
@@ -845,7 +1139,13 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, 'Return invoice is not in deleted state');
   }
 
-  // Ensure restoring would not exceed original receipt quantities
+  if (await hasNewerActiveReturn(prisma, returnInvoice)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Cannot restore; a newer return invoice already exists on this receipt',
+    );
+  }
+
   const { enriched } = await enrichReturnItemsFromReceipt(
     returnInvoice.receiptId,
     returnInvoice.items.map(it => ({
@@ -880,10 +1180,14 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
     details: { returnNumber: returnInvoice.returnNumber },
   });
 
+  const hydrated = await hydrateReturnInvoice(result);
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Return invoice restored successfully',
-    data: { returnInvoice: result },
+    data: {
+      returnInvoice: { ...hydrated, isLatest: true, canRestore: false },
+    },
   });
 });
 

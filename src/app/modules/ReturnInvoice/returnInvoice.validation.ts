@@ -30,7 +30,8 @@ const createReturnInvoiceSchema = z.object({
       receiptId: z.string().uuid('Invalid receipt ID'),
       items: z.array(returnItemSchema).min(1, 'At least one return item is required'),
       discount: z.number().min(0, 'Overall discount cannot be negative').default(0),
-      refundedAmount: z.number().min(0, 'Refunded amount cannot be negative').default(0),
+      // Optional: when omitted, server defaults refundedAmount to this return's net credit
+      refundedAmount: z.number().min(0, 'Refunded amount cannot be negative').optional(),
       note: z.string().max(500, 'Note is too long').optional().nullable(),
     })
     .refine(data => areReturnItemsUnique(data.items), uniqueItemsRefine),
