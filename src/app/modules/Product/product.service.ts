@@ -4,11 +4,27 @@ import sendResponse from '../../utils/sendResponse';
 import { prisma } from '../../utils/prisma';
 import QueryBuilder from '../../builder/QueryBuilder';
 import AppError from '../../errors/AppError';
-import { NotificationType, ProductUnit, UserRoleEnum } from '../../../generated/prisma/client';
+import {
+  NotificationType,
+  ProductUnit,
+  ReceiptStatus,
+  UserRoleEnum,
+} from '../../../generated/prisma/client';
 import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
 import { productSearchableFields } from './product.constant';
 import { generateSlug } from '../../utils/slug';
+import { roundToTwo } from '../Receipt/receipt.utils';
+import { parseProductProfitQuery } from './product.validation';
+import {
+  buildCreatedAtRange,
+  contributeReceiptLine,
+  emptyProductAgg,
+  finalizeProductRow,
+  sortProductProfitRows,
+  summarizeProductProfit,
+  type ProductProfitAgg,
+} from './product.profit.utils';
 
 const createProduct = catchAsync(async (req, res) => {
   const actor = req.user;
@@ -110,7 +126,9 @@ const getAllProducts = catchAsync(async (req, res) => {
     query,
   );
 
-  const result = await productsQuery
+  const isExportAll = String(query.limit || '').toLowerCase() === 'all';
+
+  let productsQueryBuilder = productsQuery
     .search(productSearchableFields)
     .filter()
     .sort()
@@ -150,14 +168,74 @@ const getAllProducts = catchAsync(async (req, res) => {
           lastName: true,
         },
       },
-    })
-    .paginate()
-    .execute();
+    });
+
+  if (!isExportAll) {
+    productsQueryBuilder = productsQueryBuilder.paginate();
+  }
+
+  const result = await productsQueryBuilder.execute();
+  const data = result.data || [];
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Products retrieved successfully',
     ...result,
+    data,
+    meta: isExportAll
+      ? {
+          page: 1,
+          limit: data.length,
+          total: data.length,
+          totalPage: 1,
+        }
+      : result.meta,
+  });
+});
+
+/**
+ * Active-catalog stats: product count, stock sum, net sold qty (receipts − returns).
+ */
+const getProductStats = catchAsync(async (_req, res) => {
+  const [productAgg, soldAgg, returnedAgg] = await Promise.all([
+    prisma.product.aggregate({
+      where: { isDeleted: false },
+      _count: { _all: true },
+      _sum: { stock: true },
+    }),
+    prisma.receiptItem.aggregate({
+      where: {
+        productId: { not: null },
+        receipt: {
+          isDeleted: false,
+          status: { not: ReceiptStatus.REJECTED },
+        },
+      },
+      _sum: { quantity: true },
+    }),
+    prisma.returnInvoiceItem.aggregate({
+      where: {
+        productId: { not: null },
+        returnInvoice: {
+          isDeleted: false,
+          status: { not: ReceiptStatus.REJECTED },
+        },
+      },
+      _sum: { quantity: true },
+    }),
+  ]);
+
+  const totalSoldRaw = Number(soldAgg._sum.quantity) || 0;
+  const totalReturned = Number(returnedAgg._sum.quantity) || 0;
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product stats retrieved successfully',
+    data: {
+      totalProducts: productAgg._count._all,
+      totalStock: roundToTwo(Number(productAgg._sum.stock) || 0),
+      totalSoldQty: roundToTwo(Math.max(0, totalSoldRaw - totalReturned)),
+    },
   });
 });
 
@@ -645,11 +723,175 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
   });
 });
 
+/**
+ * Per-product profit/loss from receipt items in an optional date range.
+ *
+ * Date rules (Asia/Dhaka calendar days, inclusive):
+ * - Only receipts whose createdAt falls in [startDate, endDate]
+ * - Returned qty deducted only from return invoices whose createdAt is also in range
+ * - Returns outside the range are ignored (net sold stays higher for that period)
+ *
+ * Profit uses receipt-item selling (via totalPrice) and buyingPrice snapshots.
+ * If buyingPrice is missing, unit sellingPrice is used as cost (zero margin on that qty).
+ * Return unit-price differences are ignored — only qty is reduced.
+ * Each product row includes receipt numbers that contributed net sold qty.
+ */
+const getProductProfit = catchAsync(async (req, res) => {
+  const query = parseProductProfitQuery(req.query);
+  const createdAtRange = buildCreatedAtRange(query.startDate, query.endDate);
+
+  const receiptWhere = {
+    isDeleted: false,
+    status: { not: ReceiptStatus.REJECTED },
+    ...(createdAtRange ? { createdAt: createdAtRange } : {}),
+  };
+
+  const receipts = await prisma.receipt.findMany({
+    where: receiptWhere,
+    select: {
+      id: true,
+      receiptNumber: true,
+      items: {
+        where: { productId: { not: null } },
+        select: {
+          id: true,
+          productId: true,
+          productName: true,
+          quantity: true,
+          totalPrice: true,
+          sellingPrice: true,
+          buyingPrice: true,
+          product: {
+            select: {
+              id: true,
+              name: true,
+              unit: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const receiptItems = receipts.flatMap(r =>
+    r.items.map(item => ({
+      ...item,
+      receiptId: r.id,
+      receiptNumber: r.receiptNumber,
+    })),
+  );
+  const receiptItemIds = receiptItems.map(it => it.id);
+
+  const returnedQtyByItemId = new Map<string, number>();
+
+  if (receiptItemIds.length > 0) {
+    const returnRows = await prisma.returnInvoiceItem.findMany({
+      where: {
+        receiptItemId: { in: receiptItemIds },
+        returnInvoice: {
+          isDeleted: false,
+          status: { not: ReceiptStatus.REJECTED },
+          ...(createdAtRange ? { createdAt: createdAtRange } : {}),
+        },
+      },
+      select: {
+        receiptItemId: true,
+        quantity: true,
+      },
+    });
+
+    for (const row of returnRows) {
+      returnedQtyByItemId.set(
+        row.receiptItemId,
+        roundToTwo(
+          (returnedQtyByItemId.get(row.receiptItemId) || 0) + Number(row.quantity),
+        ),
+      );
+    }
+  }
+
+  const byProduct = new Map<string, ProductProfitAgg>();
+
+  for (const item of receiptItems) {
+    const productId = item.productId;
+    if (!productId) continue;
+
+    const name = item.product?.name || item.productName;
+    const unit = item.product?.unit || 'PIECE';
+
+    let agg = byProduct.get(productId);
+    if (!agg) {
+      agg = emptyProductAgg(productId, name, unit);
+      byProduct.set(productId, agg);
+    } else if (item.product?.name) {
+      agg.productName = item.product.name;
+      agg.unit = item.product.unit;
+    }
+
+    contributeReceiptLine(
+      agg,
+      {
+        quantity: item.quantity,
+        totalPrice: item.totalPrice,
+        sellingPrice: item.sellingPrice,
+        buyingPrice: item.buyingPrice,
+      },
+      returnedQtyByItemId.get(item.id) || 0,
+      { id: item.receiptId, receiptNumber: item.receiptNumber },
+    );
+  }
+
+  let rows = Array.from(byProduct.values())
+    .map(finalizeProductRow)
+    .filter(row => row.soldQty > 0);
+
+  if (query.searchTerm) {
+    const term = query.searchTerm.toLowerCase();
+    rows = rows.filter(row => row.productName.toLowerCase().includes(term));
+  }
+
+  rows = sortProductProfitRows(rows, query.sortBy, query.sortOrder);
+
+  const summary = summarizeProductProfit(rows);
+
+  const total = rows.length;
+  const page = query.page;
+  const limit = query.limit;
+  const totalPage = total === 0 ? 0 : Math.ceil(total / limit);
+  const start = (page - 1) * limit;
+  const paged = rows.slice(start, start + limit);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product profit report retrieved successfully',
+    meta: {
+      page,
+      limit,
+      total,
+      totalPage,
+    },
+    data: {
+      products: paged,
+      summary,
+      filters: {
+        startDate: query.startDate ?? null,
+        endDate: query.endDate ?? null,
+        searchTerm: query.searchTerm ?? null,
+        sortBy: query.sortBy,
+        sortOrder: query.sortOrder,
+        timezone: 'Asia/Dhaka',
+      },
+    },
+  });
+});
+
 export const ProductServices = {
   createProduct,
   bulkCreateProducts,
   getAllProducts,
+  getProductStats,
   getProductById,
+  getProductProfit,
   updateProduct,
   deleteProduct,
   confirmDeleteProduct,

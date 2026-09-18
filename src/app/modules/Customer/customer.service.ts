@@ -9,6 +9,10 @@ import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
 import { customerSearchableFields } from './customer.constant';
 import { parsePhoneInput, getPhoneLookupVariants } from '../../utils/phone';
+import {
+  attachCustomerFinancials,
+  computeCustomersFinancials,
+} from './customer.utils';
 
 const createCustomer = catchAsync(async (req, res) => {
   const actor = req.user;
@@ -149,7 +153,9 @@ const getAllCustomers = catchAsync(async (req, res) => {
     query,
   );
 
-  const result = await customersQuery
+  const isExportAll = String(query.limit || '').toLowerCase() === 'all';
+
+  let customersQueryBuilder = customersQuery
     .search(customerSearchableFields)
     .filter()
     .sort()
@@ -187,14 +193,38 @@ const getAllCustomers = catchAsync(async (req, res) => {
           lastName: true,
         },
       },
-    })
-    .paginate()
-    .execute();
+    });
+
+  if (!isExportAll) {
+    customersQueryBuilder = customersQueryBuilder.paginate();
+  }
+
+  const result = await customersQueryBuilder.execute();
+
+  const rows = (result.data || []) as { id: string }[];
+  const data = isExportAll
+    ? rows
+    : attachCustomerFinancials(
+        rows,
+        await computeCustomersFinancials(
+          prisma,
+          rows.map(row => row.id),
+        ),
+      );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Customers retrieved successfully',
     ...result,
+    data,
+    meta: isExportAll
+      ? {
+          page: 1,
+          limit: data.length,
+          total: data.length,
+          totalPage: 1,
+        }
+      : result.meta,
   });
 });
 
@@ -233,10 +263,12 @@ const getCustomerById = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Customer not found');
   }
 
+  const financials = await computeCustomersFinancials(prisma, [customer.id]);
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     message: 'Customer retrieved successfully',
-    data: customer,
+    data: attachCustomerFinancials([customer], financials)[0],
   });
 });
 

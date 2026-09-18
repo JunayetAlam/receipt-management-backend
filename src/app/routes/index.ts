@@ -10,6 +10,7 @@ import { CustomerRouters } from '../modules/Customer/customer.routes';
 import { ReceiptRouters } from '../modules/Receipt/receipt.routes';
 import { ReturnInvoiceRouters } from '../modules/ReturnInvoice/returnInvoice.routes';
 import { ShopRouters } from '../modules/Shop/shop.routes';
+import { StatsRouters } from '../modules/Stats/stats.routes';
 
 const router = express.Router();
 
@@ -41,6 +42,10 @@ const moduleRoutes = [
   {
     path: '/shops',
     route: ShopRouters,
+  },
+  {
+    path: '/stats',
+    route: StatsRouters,
   },
   {
     path: '/assets',

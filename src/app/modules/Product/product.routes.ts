@@ -9,6 +9,17 @@ const router = express.Router();
 // Get all products (Admin, Superadmin, Cashier)
 router.get('/', auth('ANY'), ProductServices.getAllProducts);
 
+// Product catalog stats (must be before /:id)
+router.get('/stats', auth('ANY'), ProductServices.getProductStats);
+
+// Product profit/loss report (must be before /:id)
+router.get(
+  '/profit',
+  auth('SUPERADMIN', 'ADMIN'),
+  validateRequest.query(productValidation.productProfitQuerySchema),
+  ProductServices.getProductProfit,
+);
+
 // Get single product
 router.get('/:id', auth('ANY'), ProductServices.getProductById);
 
