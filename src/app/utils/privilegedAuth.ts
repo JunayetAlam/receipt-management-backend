@@ -16,6 +16,7 @@ export const validatePrivilegedToken = (
   }
 
   const configuredTokenString = config.secret_admin_token?.trim();
+  console.log({ configuredTokenString });
   if (!configuredTokenString || !providedToken) {
     return false;
   }
