@@ -369,6 +369,8 @@ const getAllReceipts = catchAsync(async (req, res) => {
           name: true,
           countryCode: true,
           phoneNumber: true,
+          email: true,
+          address: true,
         },
       },
       createdBy: {
