@@ -4,6 +4,7 @@ import sendResponse from '../../utils/sendResponse';
 import { prisma } from '../../utils/prisma';
 import QueryBuilder from '../../builder/QueryBuilder';
 import AppError from '../../errors/AppError';
+import { assertCustomerCompleteById } from '../../utils/customerCompleteness';
 import {
   CustomerTransactionType,
   NotificationType,
@@ -292,6 +293,8 @@ const createReturnInvoice = catchAsync(async (req, res) => {
   const refundedAmountInput = req.body.refundedAmount;
 
   const { receipt, enriched } = await enrichReturnItemsFromReceipt(receiptId, items);
+
+  await assertCustomerCompleteById(receipt.customerId, 'return invoice');
 
   const previous = await getLatestActiveReturn(prisma, receiptId, {
     include: {
@@ -736,6 +739,15 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
       'Approved return invoices are locked and cannot be edited by cashiers. Please contact an administrator.',
     );
   }
+
+  const sourceReceipt = await prisma.receipt.findUnique({
+    where: { id: existing.receiptId },
+    select: { customerId: true },
+  });
+  if (!sourceReceipt) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Source receipt not found');
+  }
+  await assertCustomerCompleteById(sourceReceipt.customerId, 'return invoice');
 
   let previousDueAmount = 0;
   if (existing.previousReturnInvoiceId) {

@@ -25,6 +25,10 @@ import {
 } from './receipt.utils';
 import { parsePhoneInput, getPhoneLookupVariants } from '../../utils/phone';
 import {
+  assertCustomerComplete,
+  assertCustomerCompleteById,
+} from '../../utils/customerCompleteness';
+import {
   deriveMoneyForReturnInvoice,
   withDerivedReturnMoney,
 } from '../ReturnInvoice/returnInvoice.utils';
@@ -73,6 +77,11 @@ const createReceipt = catchAsync(async (req, res) => {
     });
 
     if (!customer) {
+      assertCustomerComplete(
+        { name: customerName, phoneNumber, address: customerAddress },
+        'receipt',
+      );
+
       // Auto-create new customer on the fly
       customer = await prisma.customer.create({
         data: {
@@ -100,6 +109,15 @@ const createReceipt = catchAsync(async (req, res) => {
         },
       });
     } else if (customer.isDeleted) {
+      assertCustomerComplete(
+        {
+          name: customerName?.trim() || customer.name,
+          phoneNumber: customer.phoneNumber,
+          address: customerAddress !== undefined ? customerAddress : customer.address,
+        },
+        'receipt',
+      );
+
       // Auto-restore customer if previously deleted with new details
       customer = await prisma.customer.update({
         where: { id: customer.id },
@@ -135,6 +153,8 @@ const createReceipt = catchAsync(async (req, res) => {
   if (!customer) {
     throw new AppError(httpStatus.BAD_REQUEST, 'Valid customerId or customerPhone is required');
   }
+
+  assertCustomerComplete(customer, 'receipt');
 
   const duplicateProductError = getReceiptItemsUniquenessError(items);
   if (duplicateProductError) {
@@ -568,6 +588,11 @@ const updateReceipt = catchAsync(async (req, res) => {
     });
 
     if (!cust) {
+      assertCustomerComplete(
+        { name: payload.customerName, phoneNumber, address: payload.customerAddress },
+        'receipt',
+      );
+
       cust = await prisma.customer.create({
         data: {
           name: payload.customerName?.trim() || `Customer-${phoneNumber.slice(-4)}`,
@@ -594,6 +619,15 @@ const updateReceipt = catchAsync(async (req, res) => {
         },
       });
     } else if (cust.isDeleted) {
+      assertCustomerComplete(
+        {
+          name: payload.customerName?.trim() || cust.name,
+          phoneNumber: cust.phoneNumber,
+          address: payload.customerAddress !== undefined ? payload.customerAddress : cust.address,
+        },
+        'receipt',
+      );
+
       cust = await prisma.customer.update({
         where: { id: cust.id },
         data: {
@@ -626,6 +660,8 @@ const updateReceipt = catchAsync(async (req, res) => {
 
     customerIdToUpdate = cust.id;
   }
+
+  await assertCustomerCompleteById(customerIdToUpdate ?? existing.customerId, 'receipt');
 
   if (payload.items && Array.isArray(payload.items)) {
     const duplicateProductError = getReceiptItemsUniquenessError(payload.items);

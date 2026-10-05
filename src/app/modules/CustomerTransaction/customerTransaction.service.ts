@@ -210,6 +210,7 @@ const getAllCustomerTransactions = catchAsync(async (req, res) => {
             phoneNumber: true,
             countryCode: true,
             email: true,
+            address: true,
             image: true,
           },
         },
