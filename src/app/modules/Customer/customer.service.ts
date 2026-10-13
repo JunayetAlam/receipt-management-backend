@@ -48,6 +48,7 @@ const createCustomer = catchAsync(async (req, res) => {
           address: payload.address !== undefined ? (payload.address || null) : existing.address,
           whatsappNumber: payload.whatsappNumber !== undefined ? (payload.whatsappNumber?.trim() || null) : existing.whatsappNumber,
           image: payload.image !== undefined ? (payload.image || null) : existing.image,
+          customerType: payload.customerType !== undefined ? payload.customerType : existing.customerType,
           isDeleted: false,
           isDeleteRequested: false,
           deleteReason: null,
@@ -113,6 +114,7 @@ const createCustomer = catchAsync(async (req, res) => {
       email: payload.email || null,
       address: payload.address || null,
       image: payload.image ? payload.image.trim() : null,
+      customerType: payload.customerType || 'CUSTOMER',
       createdById: actor.id,
       updatedById: actor.id,
     },
@@ -170,6 +172,12 @@ const getAllCustomers = catchAsync(async (req, res) => {
     query.isDeleteRequested = false;
   }
 
+  if (query.customerType && (query.customerType === 'CUSTOMER' || query.customerType === 'RETAILER')) {
+    // Keep valid customerType filter
+  } else {
+    delete query.customerType;
+  }
+
   const customersQuery = new QueryBuilder<typeof prisma.customer>(
     prisma.customer,
     query,
@@ -184,6 +192,7 @@ const getAllCustomers = catchAsync(async (req, res) => {
     .customFields({
       id: true,
       name: true,
+      customerType: true,
       countryCode: true,
       phoneNumber: true,
       whatsappNumber: true,

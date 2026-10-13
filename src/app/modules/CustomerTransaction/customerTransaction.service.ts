@@ -162,6 +162,13 @@ const buildTransactionFilter = (query: Record<string, any>): Prisma.CustomerTran
     }
   }
 
+  if (query.customerType && (query.customerType === 'CUSTOMER' || query.customerType === 'RETAILER')) {
+    where.customer = {
+      ...where.customer,
+      customerType: query.customerType,
+    };
+  }
+
   if (query.searchTerm && String(query.searchTerm).trim()) {
     const term = String(query.searchTerm).trim();
     where.OR = [
@@ -207,6 +214,7 @@ const getAllCustomerTransactions = catchAsync(async (req, res) => {
           select: {
             id: true,
             name: true,
+            customerType: true,
             phoneNumber: true,
             countryCode: true,
             email: true,

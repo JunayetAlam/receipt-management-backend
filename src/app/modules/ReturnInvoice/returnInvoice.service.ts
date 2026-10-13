@@ -458,6 +458,13 @@ const getAllReturnInvoices = catchAsync(async (req, res) => {
     query.isDeleteRequested = false;
   }
 
+  if (query.customerType && (query.customerType === 'CUSTOMER' || query.customerType === 'RETAILER')) {
+    query['receipt.customer.customerType'] = query.customerType;
+    delete query.customerType;
+  } else {
+    delete query.customerType;
+  }
+
   const returnsQuery = new QueryBuilder<typeof prisma.returnInvoice>(
     prisma.returnInvoice,
     query,
@@ -498,6 +505,7 @@ const getAllReturnInvoices = catchAsync(async (req, res) => {
             select: {
               id: true,
               name: true,
+              customerType: true,
               countryCode: true,
               phoneNumber: true,
               email: true,

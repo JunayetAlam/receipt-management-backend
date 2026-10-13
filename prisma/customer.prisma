@@ -23,6 +23,8 @@ model Customer {
   receipts            Receipt[]
   transactions        CustomerTransaction[]
 
+  customerType        CustomerType @default(CUSTOMER)
+
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -31,9 +33,15 @@ model Customer {
   @@index([whatsappNumber])
   @@index([countryCode])
   @@index([name])
+  @@index([customerType])
   @@index([isDeleted])
   @@index([isDeleteRequested])
   @@index([createdById])
   @@index([updatedById])
   @@map("customers")
+}
+
+enum CustomerType {
+  CUSTOMER
+  RETAILER
 }

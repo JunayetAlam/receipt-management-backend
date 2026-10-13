@@ -29,6 +29,7 @@ const createCustomerSchema = z.object({
       .optional()
       .nullable(),
     image: z.string().optional().nullable().or(z.literal('')),
+    customerType: z.enum(['CUSTOMER', 'RETAILER']).default('CUSTOMER').optional(),
   }),
 });
 
@@ -41,6 +42,7 @@ const updateCustomerSchema = z.object({
     email: z.string().email('Invalid email address').optional().nullable().or(z.literal('')),
     address: z.string().max(300).optional().nullable(),
     image: z.string().optional().nullable().or(z.literal('')),
+    customerType: z.enum(['CUSTOMER', 'RETAILER']).optional(),
   }),
 });
 
