@@ -43,5 +43,9 @@ enum ProductUnit {
   METER
   BOX
   PACKET
+  DOZEN
+  YARD
+  FEET
+  CARTON
   OTHER
 }

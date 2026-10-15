@@ -1,0 +1,5 @@
+-- AlterEnum
+ALTER TYPE "ProductUnit" ADD VALUE 'DOZEN';
+ALTER TYPE "ProductUnit" ADD VALUE 'YARD';
+ALTER TYPE "ProductUnit" ADD VALUE 'FEET';
+ALTER TYPE "ProductUnit" ADD VALUE 'CARTON';
