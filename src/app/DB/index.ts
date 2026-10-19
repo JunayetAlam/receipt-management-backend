@@ -4,11 +4,11 @@ import config from '../../config';
 import { prisma } from '../utils/prisma';
 
 const superAdminData = {
-  firstName: 'Super',
-  lastName: 'Admin',
-  email: 'admin@gmail.com',
-  password: '123456',
-  phoneNumber: '01821558090',
+  firstName: 'Riad',
+  lastName: 'Salihin',
+  email: 'riadadmin@gmail.com',
+  password: 'Riad@2345',
+  phoneNumber: '+8801212121212',
   role: UserRoleEnum.SUPERADMIN,
   status: 'ACTIVE' as const,
   isAgreeWithTerms: true,
