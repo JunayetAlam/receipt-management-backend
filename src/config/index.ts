@@ -34,6 +34,7 @@ export default {
   project_slug: process.env.PROJECT_SLUG || '',
   port: process.env.PORT,
   database_url: process.env.DATABASE_URL,
+  super_admin_email: process.env.SUPER_ADMIN_EMAIL,
   super_admin_password: process.env.SUPER_ADMIN_PASSWORD,
   bcrypt_salt_rounds: process.env.BCRYPT_SALT_ROUNDS,
   mail: process.env.MAILTRAP_USER,

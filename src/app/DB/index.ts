@@ -3,11 +3,10 @@ import * as bcrypt from 'bcrypt';
 import config from '../../config';
 import { prisma } from '../utils/prisma';
 
+// Email and password come from SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD in the env files.
 const superAdminData = {
   firstName: 'Riad',
   lastName: 'Salihin',
-  email: 'riadadmin@gmail.com',
-  password: 'Riad@2345',
   phoneNumber: '+8801212121212',
   role: UserRoleEnum.SUPERADMIN,
   status: 'ACTIVE' as const,
@@ -26,12 +25,24 @@ const seedSuperAdmin = async () => {
 
     // If not, create one
     if (!isSuperAdminExists) {
-      superAdminData.password = await bcrypt.hash(
-        config.super_admin_password as string,
-        Number(config.bcrypt_salt_rounds) || 12,
-      );
+      const email = config.super_admin_email;
+      const password = config.super_admin_password;
+      if (!email || !password) {
+        console.error(
+          'Super Admin not created: set SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD in the env file.',
+        );
+        return;
+      }
+
       await prisma.user.create({
-        data: superAdminData,
+        data: {
+          ...superAdminData,
+          email,
+          password: await bcrypt.hash(
+            password,
+            Number(config.bcrypt_salt_rounds) || 12,
+          ),
+        },
       });
       console.log('Super Admin created successfully.');
     } else {
