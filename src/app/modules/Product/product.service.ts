@@ -25,6 +25,7 @@ import {
   summarizeProductProfit,
   type ProductProfitAgg,
 } from './product.profit.utils';
+import { actorUserId } from '../../utils/privilegedAuth';
 
 const createProduct = catchAsync(async (req, res) => {
   const actor = req.user;
@@ -65,8 +66,8 @@ const createProduct = catchAsync(async (req, res) => {
       buyingPrice: payload.buyingPrice ?? null,
       stock: payload.stock ?? 0,
       description: payload.description ?? null,
-      createdById: actor.id,
-      updatedById: actor.id,
+      createdById: actorUserId(actor),
+      updatedById: actorUserId(actor),
     },
     include: {
       createdBy: {
@@ -361,7 +362,7 @@ const updateProduct = catchAsync(async (req, res) => {
       ...payload,
       ...(payload.name ? { name: payload.name.trim() } : {}),
       ...(slugToUpdate ? { slug: slugToUpdate } : {}),
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -414,7 +415,7 @@ const deleteProduct = catchAsync(async (req, res) => {
       data: {
         isDeleted: true,
         isDeleteRequested: false,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -445,10 +446,10 @@ const deleteProduct = catchAsync(async (req, res) => {
       where: { id },
       data: {
         isDeleteRequested: true,
-        deleteRequestedById: actor.id,
+        deleteRequestedById: actorUserId(actor),
         deleteRequestedAt: new Date(),
         deleteReason: reason || null,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -498,7 +499,7 @@ const confirmDeleteProduct = catchAsync(async (req, res) => {
     data: {
       isDeleted: true,
       isDeleteRequested: false,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -552,7 +553,7 @@ const rejectDeleteProduct = catchAsync(async (req, res) => {
       deleteRequestedById: null,
       deleteRequestedAt: null,
       deleteReason: null,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -607,7 +608,7 @@ const restoreProduct = catchAsync(async (req, res) => {
     data: {
       isDeleted: false,
       isDeleteRequested: false,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -717,7 +718,7 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
             deleteRequestedById: null,
             deleteRequestedAt: null,
             deleteReason: null,
-            updatedById: actor.id,
+            updatedById: actorUserId(actor),
           },
         });
         createdOrUpdatedList.push(restored);
@@ -732,8 +733,8 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
             buyingPrice: item.buyingPrice ?? null,
             stock: item.stock ?? 0,
             description: item.description ?? null,
-            createdById: actor.id,
-            updatedById: actor.id,
+            createdById: actorUserId(actor),
+            updatedById: actorUserId(actor),
           },
         });
         createdOrUpdatedList.push(created);

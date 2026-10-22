@@ -35,6 +35,7 @@ import {
   sumAncestorReturnMoney,
   withDerivedReturnMoney,
 } from './returnInvoice.utils';
+import { actorUserId } from '../../utils/privilegedAuth';
 
 const previousReturnInclude = {
   select: {
@@ -354,8 +355,8 @@ const createReturnInvoice = catchAsync(async (req, res) => {
         refundedAmount: settledRefunded,
         status: ReceiptStatus.PENDING,
         note: note || null,
-        createdById: actor.id,
-        updatedById: actor.id,
+        createdById: actorUserId(actor),
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -382,7 +383,7 @@ const createReturnInvoice = catchAsync(async (req, res) => {
         receiptId: receipt.id,
         returnInvoiceId: returnInvoice.id,
         note: note || null,
-        createdById: actor.id,
+        createdById: actorUserId(actor),
       },
     });
 
@@ -899,7 +900,7 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
         refundedAmount: finalRefunded,
         note: payload.note !== undefined ? payload.note : undefined,
         ...(statusToSet !== undefined ? { status: statusToSet } : {}),
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
       include: returnInvoiceInclude,
     });
@@ -945,7 +946,7 @@ const updateReturnInvoiceStatus = catchAsync(async (req, res) => {
     where: { id },
     data: {
       status,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
     include: returnInvoiceInclude,
   });
@@ -1014,7 +1015,7 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
         data: {
           isDeleted: true,
           isDeleteRequested: false,
-          updatedById: actor.id,
+          updatedById: actorUserId(actor),
         },
       });
     });
@@ -1049,10 +1050,10 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
       where: { id },
       data: {
         isDeleteRequested: true,
-        deleteRequestedById: actor.id,
+        deleteRequestedById: actorUserId(actor),
         deleteRequestedAt: new Date(),
         deleteReason: reason || null,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -1104,7 +1105,7 @@ const confirmDeleteReturnInvoice = catchAsync(async (req, res) => {
       data: {
         isDeleted: true,
         isDeleteRequested: false,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
   });
@@ -1153,7 +1154,7 @@ const rejectDeleteReturnInvoice = catchAsync(async (req, res) => {
       deleteRequestedById: null,
       deleteRequestedAt: null,
       deleteReason: null,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -1229,7 +1230,7 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
         deleteRequestedById: null,
         deleteRequestedAt: null,
         deleteReason: null,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
       include: returnInvoiceInclude,
     });

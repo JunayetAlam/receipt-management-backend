@@ -49,3 +49,11 @@ export const validatePrivilegedToken = (
 
   return false;
 };
+
+/**
+ * The user id to store in `createdById` / `updatedById` / `approvedById` /
+ * `deleteRequestedById`. Privileged-token requests act as a system actor with
+ * no `users` row, so they store null instead of breaking the foreign key.
+ */
+export const actorUserId = (actor: { id: string }): string | null =>
+  actor.id === SYSTEM_PRIVILEGED_ACTOR_ID ? null : actor.id;

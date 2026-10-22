@@ -32,6 +32,7 @@ import {
   deriveMoneyForReturnInvoice,
   withDerivedReturnMoney,
 } from '../ReturnInvoice/returnInvoice.utils';
+import { actorUserId } from '../../utils/privilegedAuth';
 
 /**
  * Create a new receipt with automatic pricing, per-item percentage discount,
@@ -90,8 +91,8 @@ const createReceipt = catchAsync(async (req, res) => {
           phoneNumber,
           address: customerAddress?.trim() || null,
           email: customerEmail?.trim() || null,
-          createdById: actor.id,
-          updatedById: actor.id,
+          createdById: actorUserId(actor),
+          updatedById: actorUserId(actor),
         },
       });
 
@@ -130,7 +131,7 @@ const createReceipt = catchAsync(async (req, res) => {
           name: customerName?.trim() || customer.name,
           address: customerAddress !== undefined ? (customerAddress?.trim() || null) : customer.address,
           email: customerEmail !== undefined ? (customerEmail?.trim() || null) : customer.email,
-          updatedById: actor.id,
+          updatedById: actorUserId(actor),
         },
       });
 
@@ -220,8 +221,8 @@ const createReceipt = catchAsync(async (req, res) => {
         dueAmount,
         status: ReceiptStatus.PENDING,
         note: note || null,
-        createdById: actor.id,
-        updatedById: actor.id,
+        createdById: actorUserId(actor),
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -247,7 +248,7 @@ const createReceipt = catchAsync(async (req, res) => {
         type: CustomerTransactionType.RECEIPT,
         receiptId: receipt.id,
         note: note || null,
-        createdById: actor.id,
+        createdById: actorUserId(actor),
       },
     });
 
@@ -258,7 +259,7 @@ const createReceipt = catchAsync(async (req, res) => {
           receiptId: receipt.id,
           amount: finalPaidAmount,
           note: 'Initial payment upon receipt creation',
-          createdById: actor.id,
+          createdById: actorUserId(actor),
         },
       });
 
@@ -269,7 +270,7 @@ const createReceipt = catchAsync(async (req, res) => {
           receiptId: receipt.id,
           paymentId: initialPayment.id,
           note: initialPayment.note || null,
-          createdById: actor.id,
+          createdById: actorUserId(actor),
         },
       });
     }
@@ -608,8 +609,8 @@ const updateReceipt = catchAsync(async (req, res) => {
           phoneNumber,
           address: payload.customerAddress?.trim() || null,
           email: payload.customerEmail?.trim() || null,
-          createdById: actor.id,
-          updatedById: actor.id,
+          createdById: actorUserId(actor),
+          updatedById: actorUserId(actor),
         },
       });
 
@@ -647,7 +648,7 @@ const updateReceipt = catchAsync(async (req, res) => {
           name: payload.customerName?.trim() || cust.name,
           address: payload.customerAddress !== undefined ? (payload.customerAddress?.trim() || null) : cust.address,
           email: payload.customerEmail !== undefined ? (payload.customerEmail?.trim() || null) : cust.email,
-          updatedById: actor.id,
+          updatedById: actorUserId(actor),
         },
       });
 
@@ -779,7 +780,7 @@ const updateReceipt = catchAsync(async (req, res) => {
         discount: finalDiscount,
         totalAmount,
         dueAmount,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
       include: {
         customer: true,
@@ -856,7 +857,7 @@ const deleteReceipt = catchAsync(async (req, res) => {
         data: {
           isDeleted: true,
           isDeleteRequested: false,
-          updatedById: actor.id,
+          updatedById: actorUserId(actor),
         },
       });
     });
@@ -888,10 +889,10 @@ const deleteReceipt = catchAsync(async (req, res) => {
       where: { id },
       data: {
         isDeleteRequested: true,
-        deleteRequestedById: actor.id,
+        deleteRequestedById: actorUserId(actor),
         deleteRequestedAt: new Date(),
         deleteReason: reason || null,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -954,7 +955,7 @@ const confirmDeleteReceipt = catchAsync(async (req, res) => {
       data: {
         isDeleted: true,
         isDeleteRequested: false,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
   });
@@ -1008,7 +1009,7 @@ const rejectDeleteReceipt = catchAsync(async (req, res) => {
       deleteRequestedById: null,
       deleteRequestedAt: null,
       deleteReason: null,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -1068,7 +1069,7 @@ const restoreReceipt = catchAsync(async (req, res) => {
         deleteRequestedById: null,
         deleteRequestedAt: null,
         deleteReason: null,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
   });
@@ -1128,7 +1129,7 @@ const addPayment = catchAsync(async (req, res) => {
         receiptId: id,
         amount: paymentAmount,
         note: note || null,
-        createdById: actor.id,
+        createdById: actorUserId(actor),
         createdAt: date ? new Date(date) : undefined,
       },
       include: {
@@ -1146,7 +1147,7 @@ const addPayment = catchAsync(async (req, res) => {
         receiptId: receipt.id,
         paymentId: payment.id,
         note: note || null,
-        createdById: actor.id,
+        createdById: actorUserId(actor),
         createdAt: date ? new Date(date) : undefined,
       },
     });
@@ -1160,7 +1161,7 @@ const addPayment = catchAsync(async (req, res) => {
       data: {
         paidAmount: newPaidAmount,
         dueAmount: newDueAmount,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
       include: {
         customer: true,
@@ -1293,7 +1294,7 @@ const updatePayment = catchAsync(async (req, res) => {
       data: {
         paidAmount: newPaidAmount,
         dueAmount: newDueAmount,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
       include: {
         customer: true,
@@ -1391,7 +1392,7 @@ const deletePayment = catchAsync(async (req, res) => {
       data: {
         paidAmount: newPaidAmount,
         dueAmount: newDueAmount,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
       include: {
         customer: true,
@@ -1476,7 +1477,7 @@ const approvePayment = catchAsync(async (req, res) => {
     where: { id: paymentId },
     data: {
       status: ReceiptStatus.APPROVED,
-      approvedById: actor.id,
+      approvedById: actorUserId(actor),
       approvedAt: new Date(),
     },
     include: {
@@ -1565,7 +1566,7 @@ const updateReceiptStatus = catchAsync(async (req, res) => {
     where: { id },
     data: {
       status,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
     include: {
       customer: true,

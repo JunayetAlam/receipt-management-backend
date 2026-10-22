@@ -4,6 +4,7 @@ import sendResponse from '../../utils/sendResponse';
 import { prisma } from '../../utils/prisma';
 import { logActivity } from '../../utils/activityLog';
 import { deleteFromLocalStorage } from '../Upload/uploadToLocalStorage';
+import { actorUserId } from '../../utils/privilegedAuth';
 
 const userSelect = {
   id: true,
@@ -65,7 +66,7 @@ const upsertShopDetails = catchAsync(async (req, res) => {
       },
       data: {
         ...sanitizedData,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
       include: {
         createdBy: {
@@ -94,8 +95,8 @@ const upsertShopDetails = catchAsync(async (req, res) => {
     result = await prisma.shop.create({
       data: {
         ...sanitizedData,
-        createdById: actor.id,
-        updatedById: actor.id,
+        createdById: actorUserId(actor),
+        updatedById: actorUserId(actor),
       },
       include: {
         createdBy: {

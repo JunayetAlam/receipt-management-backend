@@ -15,6 +15,7 @@ import {
 } from './customer.utils';
 import { deleteFromLocalStorage } from '../Upload/uploadToLocalStorage';
 import { deleteFromCloudinary } from '../Upload/uploadToCloudinary';
+import { actorUserId } from '../../utils/privilegedAuth';
 
 const createCustomer = catchAsync(async (req, res) => {
   const actor = req.user;
@@ -54,7 +55,7 @@ const createCustomer = catchAsync(async (req, res) => {
           deleteReason: null,
           deleteRequestedAt: null,
           deleteRequestedById: null,
-          updatedById: actor.id,
+          updatedById: actorUserId(actor),
         },
         include: {
           createdBy: {
@@ -115,8 +116,8 @@ const createCustomer = catchAsync(async (req, res) => {
       address: payload.address || null,
       image: payload.image ? payload.image.trim() : null,
       customerType: payload.customerType || 'CUSTOMER',
-      createdById: actor.id,
-      updatedById: actor.id,
+      createdById: actorUserId(actor),
+      updatedById: actorUserId(actor),
     },
     include: {
       createdBy: {
@@ -364,7 +365,7 @@ const updateCustomer = catchAsync(async (req, res) => {
           ? payload.image?.trim() || null
           : undefined,
       name: payload.name ? payload.name.trim() : undefined,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -426,7 +427,7 @@ const deleteCustomer = catchAsync(async (req, res) => {
       data: {
         isDeleted: true,
         isDeleteRequested: false,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -457,10 +458,10 @@ const deleteCustomer = catchAsync(async (req, res) => {
       where: { id },
       data: {
         isDeleteRequested: true,
-        deleteRequestedById: actor.id,
+        deleteRequestedById: actorUserId(actor),
         deleteRequestedAt: new Date(),
         deleteReason: reason || null,
-        updatedById: actor.id,
+        updatedById: actorUserId(actor),
       },
     });
 
@@ -510,7 +511,7 @@ const confirmDeleteCustomer = catchAsync(async (req, res) => {
     data: {
       isDeleted: true,
       isDeleteRequested: false,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -564,7 +565,7 @@ const rejectDeleteCustomer = catchAsync(async (req, res) => {
       deleteRequestedById: null,
       deleteRequestedAt: null,
       deleteReason: null,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 
@@ -619,7 +620,7 @@ const restoreCustomer = catchAsync(async (req, res) => {
     data: {
       isDeleted: false,
       isDeleteRequested: false,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
   });
 

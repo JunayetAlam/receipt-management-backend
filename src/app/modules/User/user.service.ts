@@ -25,6 +25,7 @@ import {
 } from './user.policy';
 import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
+import { actorUserId } from '../../utils/privilegedAuth';
 
 const getTargetUser = async (id: string) => {
   const target = await prisma.user.findUnique({
@@ -128,8 +129,8 @@ const createUser = catchAsync(async (req, res) => {
       status: UserStatus.ACTIVE,
       isAgreeWithTerms: true,
       isEmailVerified: true,
-      createdById: actor.id,
-      updatedById: actor.id,
+      createdById: actorUserId(actor),
+      updatedById: actorUserId(actor),
     },
     select: userSelect,
   });
@@ -359,7 +360,7 @@ const updateUserRole = catchAsync(async (req, res) => {
     },
     data: {
       role,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
     select: userSelect,
   });
@@ -415,7 +416,7 @@ const updateUserStatus = catchAsync(async (req, res) => {
     },
     data: {
       status,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
     select: {
       id: true,
@@ -475,7 +476,7 @@ const deleteUser = catchAsync(async (req, res) => {
     where: { id },
     data: {
       isDeleted: true,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
     select: userSelect,
   });
@@ -518,7 +519,7 @@ const undeletedUser = catchAsync(async (req, res) => {
     where: { id },
     data: {
       isDeleted: false,
-      updatedById: actor.id,
+      updatedById: actorUserId(actor),
     },
     select: userSelect,
   });
