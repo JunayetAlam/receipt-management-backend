@@ -9,6 +9,9 @@ const router = express.Router();
 // Get all products (Admin, Superadmin, Cashier)
 router.get('/', auth('ANY'), ProductServices.getAllProducts);
 
+// Slim product list for pickers/search dropdowns (must be before /:id)
+router.get('/options', auth('ANY'), ProductServices.getProductOptions);
+
 // Product catalog stats (must be before /:id)
 router.get('/stats', auth('ANY'), ProductServices.getProductStats);
 

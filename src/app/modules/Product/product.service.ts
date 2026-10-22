@@ -27,6 +27,46 @@ import {
 } from './product.profit.utils';
 import { actorUserId } from '../../utils/privilegedAuth';
 
+// Lightweight list for product pickers (receipt form etc.).
+// Returns only the fields a dropdown row needs; active products only.
+const getProductOptions = catchAsync(async (req, res) => {
+  const searchTerm = String(req.query.searchTerm || '').trim();
+  const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 200);
+
+  const where = {
+    isDeleted: false,
+    ...(searchTerm && {
+      OR: [
+        { name: { contains: searchTerm, mode: 'insensitive' as const } },
+        { slug: { contains: searchTerm, mode: 'insensitive' as const } },
+      ],
+    }),
+  };
+
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        unit: true,
+        sellingPrice: true,
+        stock: true,
+      },
+      orderBy: { name: 'asc' },
+      take: limit,
+    }),
+    prisma.product.count({ where }),
+  ]);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product options retrieved successfully',
+    meta: { page: 1, limit, total, totalPage: 1 },
+    data: products,
+  });
+});
+
 const createProduct = catchAsync(async (req, res) => {
   const actor = req.user;
   const payload = req.body;
@@ -151,13 +191,9 @@ const getAllProducts = catchAsync(async (req, res) => {
     productsQueryBuilder = productsQueryBuilder.addWhere({
       stock: { gt: 0, lte: 5 },
     });
-  } else if (stockStatus === 'LOW') {
-    productsQueryBuilder = productsQueryBuilder.addWhere({
-      stock: { gt: 5, lte: 20 },
-    });
   } else if (isLowStock) {
     productsQueryBuilder = productsQueryBuilder.addWhere({
-      stock: { lte: 20 },
+      stock: { lte: 5 },
     });
   }
 
@@ -257,7 +293,7 @@ const getProductStats = catchAsync(async (_req, res) => {
     prisma.product.count({
       where: {
         isDeleted: false,
-        stock: { lte: 20 },
+        stock: { lte: 5 },
       },
     }),
   ]);
@@ -930,6 +966,7 @@ export const ProductServices = {
   createProduct,
   bulkCreateProducts,
   getAllProducts,
+  getProductOptions,
   getProductStats,
   getProductById,
   getProductProfit,
