@@ -96,8 +96,12 @@ const bulkCreateProductsSchema = z.object({
     products: z
       .array(bulkCreateProductItemSchema)
       .min(1, 'At least one product is required')
-      .max(500, 'Cannot upload more than 500 products at once'),
+      .max(1000, 'Cannot upload more than 1000 products at once'),
   }),
+});
+
+const importProductSchema = z.object({
+  body: bulkCreateProductItemSchema,
 });
 
 export const productValidation = {
@@ -105,6 +109,7 @@ export const productValidation = {
   updateProductSchema,
   deleteRequestSchema,
   bulkCreateProductsSchema,
+  importProductSchema,
   productProfitQuerySchema,
 };
 

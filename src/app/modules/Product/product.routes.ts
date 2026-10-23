@@ -42,6 +42,14 @@ router.post(
   ProductServices.bulkCreateProducts,
 );
 
+// Import one product from a bulk import queue (restores archived match or creates new)
+router.post(
+  '/import',
+  auth('ANY'),
+  validateRequest.body(productValidation.importProductSchema),
+  ProductServices.importProduct,
+);
+
 // Update product
 router.put(
   '/:id',

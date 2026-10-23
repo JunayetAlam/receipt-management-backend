@@ -843,7 +843,7 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
     }
 
     return createdOrUpdatedList;
-  });
+  }, { maxWait: 10000, timeout: 60000 });
 
   // Non-blocking activity log
   logActivity({
@@ -862,6 +862,86 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
     statusCode: httpStatus.CREATED,
     message: `Successfully processed ${result.length} products`,
     data: result,
+  });
+});
+
+/**
+ * Import a single product from a bulk import queue (no transaction).
+ * Restores an archived product with the same name/slug, otherwise creates a new one.
+ * The frontend calls this once per row so each row reports its own progress/error.
+ */
+const importProduct = catchAsync(async (req, res) => {
+  const actor = req.user;
+  const item = req.body as IBulkProductItem;
+  const trimmedName = item.name.trim();
+  const slug = generateSlug(trimmedName);
+
+  const existing = await prisma.product.findFirst({
+    where: {
+      isDeleted: false,
+      OR: [
+        { slug },
+        { name: { equals: trimmedName, mode: 'insensitive' } },
+      ],
+    },
+  });
+
+  if (existing && !existing.isArchived) {
+    throw new AppError(
+      httpStatus.CONFLICT,
+      `Product "${existing.name}" already exists and is active.`,
+    );
+  }
+
+  const data = {
+    name: trimmedName,
+    slug,
+    unit: item.unit,
+    sellingPrice: item.sellingPrice,
+    buyingPrice: item.buyingPrice ?? null,
+    stock: item.stock ?? 0,
+    description: item.description ?? null,
+  };
+
+  const product = existing
+    ? await prisma.product.update({
+        where: { id: existing.id },
+        data: {
+          ...data,
+          ...unarchiveData(),
+          updatedById: actorUserId(actor),
+        },
+      })
+    : await prisma.product.create({
+        data: {
+          ...data,
+          createdById: actorUserId(actor),
+          updatedById: actorUserId(actor),
+        },
+      });
+
+  // Non-blocking activity log
+  logActivity({
+    userId: actor.id,
+    action: existing ? 'RESTORE_PRODUCT' : 'CREATE_PRODUCT',
+    entityType: 'PRODUCT',
+    entityId: product.id,
+    req,
+    details: {
+      type: 'BULK_IMPORT',
+      name: product.name,
+      sellingPrice: product.sellingPrice,
+      unit: product.unit,
+      stock: product.stock,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: existing ? httpStatus.OK : httpStatus.CREATED,
+    message: existing
+      ? 'Archived product restored with new details'
+      : 'Product created successfully',
+    data: { ...product, restored: Boolean(existing) },
   });
 });
 
@@ -1035,6 +1115,7 @@ const getProductProfit = catchAsync(async (req, res) => {
 export const ProductServices = {
   createProduct,
   bulkCreateProducts,
+  importProduct,
   getAllProducts,
   getProductOptions,
   getProductStats,
