@@ -8,6 +8,9 @@ model Product {
   stock               Float       @default(0)
   description         String?
   isDeleted           Boolean     @default(false)
+  isArchived Boolean     @default(false)
+  archivedAt  DateTime?
+  archivedById String?
 
   isDeleteRequested   Boolean     @default(false)
   deleteRequestedById String?
@@ -29,6 +32,7 @@ model Product {
   @@index([name])
   @@index([slug])
   @@index([isDeleted])
+  @@index([isArchived])
   @@index([isDeleteRequested])
   @@index([createdById])
   @@index([updatedById])

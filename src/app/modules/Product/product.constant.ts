@@ -4,6 +4,7 @@ export const productFilterableFields = [
   'searchTerm',
   'unit',
   'isDeleted',
+  'isArchived',
   'isDeleteRequested',
   'minPrice',
   'maxPrice',

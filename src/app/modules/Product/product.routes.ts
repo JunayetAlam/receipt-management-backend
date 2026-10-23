@@ -50,7 +50,21 @@ router.put(
   ProductServices.updateProduct,
 );
 
-// Delete product (Immediate delete for Admin; Deletion request for Cashier)
+// Permanently delete ALL archived products ("Clear all") - Superadmin only (must be before /:id)
+router.delete(
+  '/archived/clear',
+  auth('SUPERADMIN'),
+  ProductServices.clearArchivedProducts,
+);
+
+// Permanently delete one archived product - Superadmin only
+router.delete(
+  '/:id/permanent',
+  auth('SUPERADMIN'),
+  ProductServices.permanentDeleteProduct,
+);
+
+// Delete product (Archive for Admin; Deletion request for Cashier)
 router.delete(
   '/:id',
   auth('ANY'),
@@ -58,7 +72,7 @@ router.delete(
   ProductServices.deleteProduct,
 );
 
-// Confirm deletion (Admin and Superadmin only)
+// Confirm deletion request -> archives the product (Admin and Superadmin only)
 router.patch(
   '/:id/confirm-delete',
   auth('SUPERADMIN', 'ADMIN'),
@@ -72,7 +86,7 @@ router.patch(
   ProductServices.rejectDeleteProduct,
 );
 
-// Restore / Undo soft-deleted product (Admin and Superadmin only)
+// Restore (un-archive) an archived product (Admin and Superadmin only)
 router.patch(
   '/:id/restore',
   auth('SUPERADMIN', 'ADMIN'),

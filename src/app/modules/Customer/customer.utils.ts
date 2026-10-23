@@ -160,6 +160,7 @@ export const computeCustomersFinancials = async (
     where: {
       customerId: { in: customerIds },
       isDeleted: false,
+      isArchived: false,
     },
     select: {
       customerId: true,
@@ -168,7 +169,7 @@ export const computeCustomersFinancials = async (
       dueAmount: true,
       discount: true,
       returnInvoices: {
-        where: { isDeleted: false },
+        where: { isDeleted: false, isArchived: false },
         select: {
           id: true,
           discount: true,

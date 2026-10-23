@@ -35,6 +35,7 @@ import {
   sumAncestorReturnMoney,
   withDerivedReturnMoney,
 } from './returnInvoice.utils';
+import { archiveData, unarchiveData } from '../../utils/archive';
 import { actorUserId } from '../../utils/privilegedAuth';
 
 const previousReturnInclude = {
@@ -128,7 +129,7 @@ const enrichReturnItemsFromReceipt = async (
     include: { items: true },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Source receipt not found or is deleted');
   }
 
@@ -177,8 +178,13 @@ const enrichReturnItemsFromReceipt = async (
 };
 
 const assertLatestForMutation = async (
-  returnInvoice: { id: string; receiptId: string; isDeleted?: boolean },
-  action: 'edited' | 'deleted',
+  returnInvoice: {
+    id: string;
+    receiptId: string;
+    isDeleted?: boolean;
+    isArchived?: boolean;
+  },
+  action: 'edited' | 'archived',
 ) => {
   const latest = await isLatestActiveReturn(prisma, returnInvoice);
   if (!latest) {
@@ -247,7 +253,7 @@ const hydrateReturnInvoice = async <
   };
 };
 
-const hydrateReturnInvoiceList = async <T extends { id: string; receiptId: string; createdAt: Date; isDeleted: boolean }>(
+const hydrateReturnInvoiceList = async <T extends { id: string; receiptId: string; createdAt: Date; isDeleted: boolean; isArchived: boolean }>(
   rows: T[],
 ) => {
   if (!rows.length) return [];
@@ -266,9 +272,9 @@ const hydrateReturnInvoiceList = async <T extends { id: string; receiptId: strin
   const result = [];
   for (const row of rows) {
     const money = await deriveMoneyForReturnInvoice(prisma, row.id, cache);
-    const isLatest = !row.isDeleted && latestByReceipt.get(row.receiptId) === row.id;
+    const isLatest = !row.isDeleted && !row.isArchived && latestByReceipt.get(row.receiptId) === row.id;
     const canRestore =
-      row.isDeleted && !(await hasNewerActiveReturn(prisma, row));
+      !row.isDeleted && row.isArchived && !(await hasNewerActiveReturn(prisma, row));
 
     result.push({
       ...withDerivedReturnMoney(row, money),
@@ -445,13 +451,10 @@ const getAllReturnInvoices = catchAsync(async (req, res) => {
   const actor = req.user;
   const query: Record<string, unknown> = { ...req.query };
 
-  if (actor.role === UserRoleEnum.CASHIER || query.isDeleted === undefined) {
-    query.isDeleted = false;
-  } else if (query.isDeleted === 'true') {
-    query.isDeleted = true;
-  } else if (query.isDeleted === 'false') {
-    query.isDeleted = false;
-  }
+  // Permanently deleted records are never listed. Only admins can view the archive.
+  query.isDeleted = false;
+  query.isArchived =
+    actor.role !== UserRoleEnum.CASHIER && query.isArchived === 'true';
 
   if (query.isDeleteRequested === 'true') {
     query.isDeleteRequested = true;
@@ -485,6 +488,8 @@ const getAllReturnInvoices = catchAsync(async (req, res) => {
       status: true,
       note: true,
       isDeleted: true,
+      isArchived: true,
+      archivedAt: true,
       isDeleteRequested: true,
       deleteRequestedAt: true,
       deleteReason: true,
@@ -549,14 +554,18 @@ const getReturnInvoiceById = catchAsync(async (req, res) => {
     include: returnInvoiceInclude,
   });
 
-  if (!returnInvoice) {
+  if (
+    !returnInvoice ||
+    returnInvoice.isDeleted ||
+    (returnInvoice.isArchived && req.user.role === UserRoleEnum.CASHIER)
+  ) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
   }
 
   const hydrated = await hydrateReturnInvoice(returnInvoice);
   const isLatest = await isLatestActiveReturn(prisma, returnInvoice);
   const canRestore =
-    returnInvoice.isDeleted && !(await hasNewerActiveReturn(prisma, returnInvoice));
+    returnInvoice.isArchived && !(await hasNewerActiveReturn(prisma, returnInvoice));
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -602,7 +611,7 @@ const getReturnableItemsByReceipt = catchAsync(async (req, res) => {
     },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
   }
 
@@ -733,7 +742,7 @@ const updateReturnInvoice = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!existing || existing.isDeleted) {
+  if (!existing || existing.isDeleted || existing.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found or is deleted');
   }
 
@@ -938,7 +947,7 @@ const updateReturnInvoiceStatus = catchAsync(async (req, res) => {
 
   const existing = await prisma.returnInvoice.findUnique({ where: { id } });
 
-  if (!existing || existing.isDeleted) {
+  if (!existing || existing.isDeleted || existing.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found or is deleted');
   }
 
@@ -995,11 +1004,11 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!returnInvoice || returnInvoice.isDeleted) {
+  if (!returnInvoice || returnInvoice.isDeleted || returnInvoice.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
   }
 
-  await assertLatestForMutation(returnInvoice, 'deleted');
+  await assertLatestForMutation(returnInvoice, 'archived');
 
   const money = await deriveMoneyForReturnInvoice(prisma, returnInvoice.id);
 
@@ -1013,8 +1022,7 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
       return tx.returnInvoice.update({
         where: { id },
         data: {
-          isDeleted: true,
-          isDeleteRequested: false,
+          ...archiveData(actor),
           updatedById: actorUserId(actor),
         },
       });
@@ -1022,7 +1030,7 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
 
     logActivity({
       userId: actor.id,
-      action: 'ADMIN_DELETE_RETURN_INVOICE',
+      action: 'ARCHIVE_RETURN_INVOICE',
       entityType: 'RETURN_INVOICE',
       entityId: id,
       req,
@@ -1035,7 +1043,7 @@ const deleteReturnInvoice = catchAsync(async (req, res) => {
 
     sendResponse(res, {
       statusCode: httpStatus.OK,
-      message: 'Return invoice deleted successfully and inventory has been adjusted',
+      message: 'Return invoice archived successfully and inventory has been adjusted',
       data: { returnInvoice: withDerivedReturnMoney(result, money), warnings },
     });
   } else {
@@ -1091,11 +1099,11 @@ const confirmDeleteReturnInvoice = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!returnInvoice || returnInvoice.isDeleted) {
+  if (!returnInvoice || returnInvoice.isDeleted || returnInvoice.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
   }
 
-  await assertLatestForMutation(returnInvoice, 'deleted');
+  await assertLatestForMutation(returnInvoice, 'archived');
 
   const warnings: string[] = [];
   const result = await prisma.$transaction(async tx => {
@@ -1103,8 +1111,7 @@ const confirmDeleteReturnInvoice = catchAsync(async (req, res) => {
     return tx.returnInvoice.update({
       where: { id },
       data: {
-        isDeleted: true,
-        isDeleteRequested: false,
+        ...archiveData(actor),
         updatedById: actorUserId(actor),
       },
     });
@@ -1122,8 +1129,8 @@ const confirmDeleteReturnInvoice = catchAsync(async (req, res) => {
   if (returnInvoice.deleteRequestedById) {
     sendNotification({
       userId: returnInvoice.deleteRequestedById,
-      title: 'Return Invoice Deletion Confirmed',
-      message: `Admin confirmed deletion for Return ${returnInvoice.returnNumber}.`,
+      title: 'Return Invoice Deletion Approved',
+      message: `Admin approved deletion for Return ${returnInvoice.returnNumber}. It has been archived.`,
       type: NotificationType.SUCCESS,
       link: `/return-invoices`,
       req,
@@ -1132,7 +1139,7 @@ const confirmDeleteReturnInvoice = catchAsync(async (req, res) => {
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
-    message: 'Return invoice deletion confirmed and inventory adjusted',
+    message: 'Return invoice deletion approved, return archived and inventory adjusted',
     data: { returnInvoice: result, warnings },
   });
 });
@@ -1143,7 +1150,7 @@ const rejectDeleteReturnInvoice = catchAsync(async (req, res) => {
 
   const returnInvoice = await prisma.returnInvoice.findUnique({ where: { id } });
 
-  if (!returnInvoice || returnInvoice.isDeleted) {
+  if (!returnInvoice || returnInvoice.isDeleted || returnInvoice.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
   }
 
@@ -1186,7 +1193,7 @@ const rejectDeleteReturnInvoice = catchAsync(async (req, res) => {
 });
 
 /**
- * Restore soft-deleted return invoice and re-apply stock restore.
+ * Restore (un-archive) an archived return invoice and re-apply stock restore.
  * Blocked when a newer active return already exists on the receipt.
  */
 const restoreReturnInvoice = catchAsync(async (req, res) => {
@@ -1198,8 +1205,22 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!returnInvoice || !returnInvoice.isDeleted) {
-    throw new AppError(httpStatus.BAD_REQUEST, 'Return invoice is not in deleted state');
+  if (!returnInvoice || returnInvoice.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
+  }
+  if (!returnInvoice.isArchived) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Return invoice is not archived');
+  }
+
+  const sourceReceipt = await prisma.receipt.findUnique({
+    where: { id: returnInvoice.receiptId },
+    select: { isDeleted: true, isArchived: true },
+  });
+  if (!sourceReceipt || sourceReceipt.isDeleted || sourceReceipt.isArchived) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Cannot restore; the source receipt is archived or deleted. Restore the receipt first.',
+    );
   }
 
   if (await hasNewerActiveReturn(prisma, returnInvoice)) {
@@ -1225,11 +1246,7 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
     return tx.returnInvoice.update({
       where: { id },
       data: {
-        isDeleted: false,
-        isDeleteRequested: false,
-        deleteRequestedById: null,
-        deleteRequestedAt: null,
-        deleteReason: null,
+        ...unarchiveData(),
         updatedById: actorUserId(actor),
       },
       include: returnInvoiceInclude,
@@ -1238,7 +1255,7 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
 
   logActivity({
     userId: actor.id,
-    action: 'ADMIN_RESTORE_RETURN_INVOICE',
+    action: 'RESTORE_RETURN_INVOICE',
     entityType: 'RETURN_INVOICE',
     entityId: id,
     req,
@@ -1256,6 +1273,74 @@ const restoreReturnInvoice = catchAsync(async (req, res) => {
   });
 });
 
+/**
+ * Permanently delete an archived return invoice (Superadmin / privileged token only).
+ * Stock was already adjusted when it was archived, so this only hides the record for good.
+ */
+const permanentDeleteReturnInvoice = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+
+  const returnInvoice = await prisma.returnInvoice.findUnique({ where: { id } });
+
+  if (!returnInvoice || returnInvoice.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Return invoice not found');
+  }
+  if (!returnInvoice.isArchived) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Only archived return invoices can be permanently deleted. Archive it first.',
+    );
+  }
+
+  await prisma.returnInvoice.update({
+    where: { id },
+    data: { isDeleted: true, updatedById: actorUserId(actor) },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'PERMANENT_DELETE_RETURN_INVOICE',
+    entityType: 'RETURN_INVOICE',
+    entityId: id,
+    req,
+    details: { returnNumber: returnInvoice.returnNumber },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Return invoice permanently deleted',
+    data: null,
+  });
+});
+
+/**
+ * Permanently delete every archived return invoice ("Clear all" on the Archive tab).
+ * Superadmin / privileged token only.
+ */
+const clearArchivedReturnInvoices = catchAsync(async (req, res) => {
+  const actor = req.user;
+
+  const { count } = await prisma.returnInvoice.updateMany({
+    where: { isArchived: true, isDeleted: false },
+    data: { isDeleted: true, updatedById: actorUserId(actor) },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'CLEAR_ARCHIVED_RETURN_INVOICES',
+    entityType: 'RETURN_INVOICE',
+    req,
+    details: { count },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: `${count} archived return invoice(s) permanently deleted`,
+    data: { count },
+  });
+});
+
 export const ReturnInvoiceServices = {
   createReturnInvoice,
   getAllReturnInvoices,
@@ -1267,4 +1352,6 @@ export const ReturnInvoiceServices = {
   confirmDeleteReturnInvoice,
   rejectDeleteReturnInvoice,
   restoreReturnInvoice,
+  permanentDeleteReturnInvoice,
+  clearArchivedReturnInvoices,
 };

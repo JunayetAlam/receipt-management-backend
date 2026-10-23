@@ -1,3 +1,4 @@
+import { buildTokenSearchWhere } from '../../utils/searchTokens';
 import httpStatus from 'http-status';
 import catchAsync from '../../utils/catchAsync';
 import sendResponse from '../../utils/sendResponse';
@@ -44,6 +45,7 @@ const loadAnalyticsLines = async (
   const receipts = await prisma.receipt.findMany({
     where: {
       isDeleted: false,
+      isArchived: false,
       status: { not: ReceiptStatus.REJECTED },
       ...(createdAt ? { createdAt } : {}),
     },
@@ -74,6 +76,7 @@ const loadAnalyticsLines = async (
         receiptItemId: { in: itemIds },
         returnInvoice: {
           isDeleted: false,
+          isArchived: false,
           status: { not: ReceiptStatus.REJECTED },
           ...(createdAt ? { createdAt } : {}),
         },
@@ -110,7 +113,7 @@ const dayRange = (startDate: string, endDate: string) => ({
 
 const getLowStockCount = () =>
   prisma.product.count({
-    where: { isDeleted: false, stock: { lte: LOW_STOCK_THRESHOLD } },
+    where: { isDeleted: false, isArchived: false, stock: { lte: LOW_STOCK_THRESHOLD } },
   });
 
 const getTotalCustomerCount = () =>
@@ -125,7 +128,7 @@ const getDashboardSummary = catchAsync(async (req, res) => {
   let firstReceiptDate: string | null = null;
   if (query.preset === 'all') {
     const first = await prisma.receipt.findFirst({
-      where: { isDeleted: false, status: { not: ReceiptStatus.REJECTED } },
+      where: { isDeleted: false, isArchived: false, status: { not: ReceiptStatus.REJECTED } },
       orderBy: { createdAt: 'asc' },
       select: { createdAt: true },
     });
@@ -200,10 +203,9 @@ const getLowStock = catchAsync(async (req, res) => {
   const q = parseLowStockQuery(req.query);
   const where = {
     isDeleted: false,
+    isArchived: false,
     stock: { lte: LOW_STOCK_THRESHOLD },
-    ...(q.searchTerm
-      ? { name: { contains: q.searchTerm, mode: 'insensitive' as const } }
-      : {}),
+    ...(q.searchTerm ? buildTokenSearchWhere(q.searchTerm, ['name']) : {}),
   };
 
   const [total, products] = await Promise.all([

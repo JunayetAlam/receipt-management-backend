@@ -227,7 +227,7 @@ export const getLatestActiveReturn = async (
   args?: { include?: any; select?: any },
 ) => {
   return prismaClient.returnInvoice.findFirst({
-    where: { receiptId, isDeleted: false },
+    where: { receiptId, isDeleted: false, isArchived: false },
     orderBy: [{ createdAt: 'desc' }, { returnNumber: 'desc' }],
     ...(args?.include ? { include: args.include } : {}),
     ...(args?.select ? { select: args.select } : {}),
@@ -236,9 +236,14 @@ export const getLatestActiveReturn = async (
 
 export const isLatestActiveReturn = async (
   prismaClient: any,
-  returnInvoice: { id: string; receiptId: string; isDeleted?: boolean },
+  returnInvoice: {
+    id: string;
+    receiptId: string;
+    isDeleted?: boolean;
+    isArchived?: boolean;
+  },
 ): Promise<boolean> => {
-  if (returnInvoice.isDeleted) return false;
+  if (returnInvoice.isDeleted || returnInvoice.isArchived) return false;
   const latest = await getLatestActiveReturn(prismaClient, returnInvoice.receiptId, {
     select: { id: true },
   });
@@ -254,6 +259,7 @@ export const hasNewerActiveReturn = async (
     where: {
       receiptId: returnInvoice.receiptId,
       isDeleted: false,
+      isArchived: false,
       id: { not: returnInvoice.id },
       createdAt: { gte: returnInvoice.createdAt },
     },
@@ -275,6 +281,7 @@ export const getReturnedQtyMap = async (
       receiptId,
       returnInvoice: {
         isDeleted: false,
+        isArchived: false,
         ...(excludeReturnInvoiceId ? { id: { not: excludeReturnInvoiceId } } : {}),
       },
     },
@@ -492,6 +499,7 @@ export const sumActiveReturnMoneyOnReceipt = async (
     where: {
       receiptId,
       isDeleted: false,
+      isArchived: false,
       ...(excludeReturnInvoiceId ? { id: { not: excludeReturnInvoiceId } } : {}),
     },
     select: { id: true },

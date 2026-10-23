@@ -12,6 +12,9 @@ model Receipt {
   status        ReceiptStatus @default(PENDING)
   note          String?
   isDeleted     Boolean       @default(false)
+  isArchived Boolean       @default(false)
+  archivedAt  DateTime?
+  archivedById String?
 
   isDeleteRequested   Boolean   @default(false)
   deleteRequestedById String?
@@ -37,6 +40,7 @@ model Receipt {
   @@index([customerId])
   @@index([status])
   @@index([isDeleted])
+  @@index([isArchived])
   @@index([isDeleteRequested])
   @@index([createdById])
   @@index([updatedById])

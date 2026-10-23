@@ -37,6 +37,20 @@ router.patch(
   ReturnInvoiceServices.updateReturnInvoiceStatus,
 );
 
+// Permanently delete ALL archived return invoices ("Clear all") - Superadmin only (must be before /:id)
+router.delete(
+  '/archived/clear',
+  auth('SUPERADMIN'),
+  ReturnInvoiceServices.clearArchivedReturnInvoices,
+);
+
+// Permanently delete one archived record - Superadmin only
+router.delete(
+  '/:id/permanent',
+  auth('SUPERADMIN'),
+  ReturnInvoiceServices.permanentDeleteReturnInvoice,
+);
+
 router.delete(
   '/:id',
   auth('ANY'),

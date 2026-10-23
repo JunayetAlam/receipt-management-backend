@@ -36,7 +36,21 @@ router.patch(
   ReceiptServices.updateReceiptStatus,
 );
 
-// Delete receipt (Immediate soft delete for Admin; Deletion request for Cashier)
+// Permanently delete ALL archived receipts ("Clear all") - Superadmin only (must be before /:id)
+router.delete(
+  '/archived/clear',
+  auth('SUPERADMIN'),
+  ReceiptServices.clearArchivedReceipts,
+);
+
+// Permanently delete one archived record - Superadmin only
+router.delete(
+  '/:id/permanent',
+  auth('SUPERADMIN'),
+  ReceiptServices.permanentDeleteReceipt,
+);
+
+// Delete receipt (Archive for Admin; Deletion request for Cashier)
 router.delete(
   '/:id',
   auth('ANY'),
@@ -58,7 +72,7 @@ router.patch(
   ReceiptServices.rejectDeleteReceipt,
 );
 
-// Restore / Undo soft-deleted receipt (Admin and Superadmin only)
+// Restore (un-archive) an archived receipt (Admin and Superadmin only)
 router.patch(
   '/:id/restore',
   auth('SUPERADMIN', 'ADMIN'),

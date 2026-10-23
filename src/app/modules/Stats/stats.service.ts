@@ -47,6 +47,7 @@ const getPeriodDeposit = async (gte?: Date, lte?: Date): Promise<number> => {
     where: {
       receipt: {
         isDeleted: false,
+        isArchived: false,
         customer: { isDeleted: false },
       },
       ...(gte || lte
@@ -68,6 +69,7 @@ const getPeriodDue = async (gte?: Date, lte?: Date): Promise<number> => {
   const receipts = await prisma.receipt.findMany({
     where: {
       isDeleted: false,
+      isArchived: false,
       customer: { isDeleted: false },
       ...(gte || lte
         ? {
@@ -85,7 +87,7 @@ const getPeriodDue = async (gte?: Date, lte?: Date): Promise<number> => {
       dueAmount: true,
       discount: true,
       returnInvoices: {
-        where: { isDeleted: false },
+        where: { isDeleted: false, isArchived: false },
         select: {
           id: true,
           discount: true,

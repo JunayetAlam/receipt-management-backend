@@ -2,6 +2,7 @@
 
 import httpStatus from 'http-status';
 import AppError from '../errors/AppError';
+import { buildTokenSearchWhere } from '../utils/searchTokens';
 
 type ExtractSelect<T> = T extends { findMany(args: { select: infer S }): any } ? S : never;
 
@@ -21,16 +22,17 @@ class QueryBuilder<
   // Search
   search(searchableFields: string[]) {
     const searchTerm = this.query.searchTerm as string;
-    if (searchTerm) {
+    const searchWhere = searchTerm
+      ? buildTokenSearchWhere(String(searchTerm), searchableFields)
+      : undefined;
+    if (searchWhere) {
+      const existing = this.prismaQuery.where?.AND;
       this.prismaQuery.where = {
         ...this.prismaQuery.where,
-        OR: searchableFields.map(field => {
-          if (field.includes('.')) {
-            const [parentField, childField] = field.split('.');
-            return { [parentField]: { [childField]: { contains: searchTerm, mode: 'insensitive' } } };
-          }
-          return { [field]: { contains: searchTerm, mode: 'insensitive' } };
-        }),
+        AND: [
+          ...(Array.isArray(existing) ? existing : existing ? [existing] : []),
+          ...searchWhere.AND,
+        ],
       };
     }
     return this;

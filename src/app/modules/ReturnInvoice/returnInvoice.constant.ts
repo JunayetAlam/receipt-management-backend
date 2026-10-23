@@ -5,6 +5,7 @@ export const returnInvoiceFilterableFields = [
   'receiptId',
   'status',
   'isDeleted',
+  'isArchived',
   'isDeleteRequested',
   'startDate',
   'endDate',

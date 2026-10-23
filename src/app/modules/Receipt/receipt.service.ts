@@ -32,6 +32,7 @@ import {
   deriveMoneyForReturnInvoice,
   withDerivedReturnMoney,
 } from '../ReturnInvoice/returnInvoice.utils';
+import { archiveData, unarchiveData } from '../../utils/archive';
 import { actorUserId } from '../../utils/privilegedAuth';
 
 /**
@@ -172,6 +173,14 @@ const createReceipt = catchAsync(async (req, res) => {
         where: { id: { in: productIds } },
       })
     : [];
+
+  const unavailable = dbProducts.find(p => p.isDeleted || p.isArchived);
+  if (unavailable) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Product "${unavailable.name}" is archived and cannot be added to a receipt.`,
+    );
+  }
 
   const productMap = new Map(dbProducts.map(p => [p.id, p]));
 
@@ -343,14 +352,10 @@ const getAllReceipts = catchAsync(async (req, res) => {
   const actor = req.user;
   const query: Record<string, unknown> = { ...req.query };
 
-  // For cashiers, default isDeleted to false unless admin explicitly requests
-  if (actor.role === UserRoleEnum.CASHIER || query.isDeleted === undefined) {
-    query.isDeleted = false;
-  } else if (query.isDeleted === 'true') {
-    query.isDeleted = true;
-  } else if (query.isDeleted === 'false') {
-    query.isDeleted = false;
-  }
+  // Permanently deleted records are never listed. Only admins can view the archive.
+  query.isDeleted = false;
+  query.isArchived =
+    actor.role !== UserRoleEnum.CASHIER && query.isArchived === 'true';
 
   if (query.isDeleteRequested === 'true') {
     query.isDeleteRequested = true;
@@ -386,6 +391,8 @@ const getAllReceipts = catchAsync(async (req, res) => {
       status: true,
       note: true,
       isDeleted: true,
+      isArchived: true,
+      archivedAt: true,
       isDeleteRequested: true,
       deleteRequestedAt: true,
       deleteReason: true,
@@ -469,7 +476,7 @@ const getReceiptById = catchAsync(async (req, res) => {
         orderBy: { createdAt: 'asc' },
       },
       returnInvoices: {
-        where: { isDeleted: false },
+        where: { isDeleted: false, isArchived: false },
         include: {
           items: true,
           createdBy: {
@@ -490,7 +497,11 @@ const getReceiptById = catchAsync(async (req, res) => {
     },
   });
 
-  if (!receipt) {
+  if (
+    !receipt ||
+    receipt.isDeleted ||
+    (receipt.isArchived && req.user.role === UserRoleEnum.CASHIER)
+  ) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
   }
 
@@ -545,7 +556,7 @@ const updateReceipt = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!existing || existing.isDeleted) {
+  if (!existing || existing.isDeleted || existing.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
   }
 
@@ -564,7 +575,7 @@ const updateReceipt = catchAsync(async (req, res) => {
 
   if (itemsChanged) {
     const activeReturnCount = await prisma.returnInvoice.count({
-      where: { receiptId: id, isDeleted: false },
+      where: { receiptId: id, isDeleted: false, isArchived: false },
     });
     if (activeReturnCount > 0) {
       throw new AppError(
@@ -817,8 +828,8 @@ const updateReceipt = catchAsync(async (req, res) => {
 });
 
 /**
- * Delete receipt handler:
- * - Admin/Superadmin: Immediate soft-delete and automatically restores inventory stock.
+ * Delete receipt handler (archive flow):
+ * - Admin/Superadmin: Archives immediately and automatically restores inventory stock.
  * - Cashier: Submits delete request (isDeleteRequested: true) and notifies admins.
  */
 const deleteReceipt = catchAsync(async (req, res) => {
@@ -831,32 +842,31 @@ const deleteReceipt = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
   }
 
   const activeReturnCount = await prisma.returnInvoice.count({
-    where: { receiptId: id, isDeleted: false },
+    where: { receiptId: id, isDeleted: false, isArchived: false },
   });
   if (activeReturnCount > 0) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      'Cannot delete this receipt while return invoices exist. Delete the return invoices first.',
+      'Cannot archive this receipt while return invoices exist. Archive the return invoices first.',
     );
   }
 
   const isAdmin = actor.role === UserRoleEnum.SUPERADMIN || actor.role === UserRoleEnum.ADMIN;
 
   if (isAdmin) {
-    // Immediate soft delete by Admin with inventory restoration
+    // Immediate archive by Admin with inventory restoration
     const result = await prisma.$transaction(async tx => {
       await restoreStockForProductItems(tx, receipt.items, []);
 
       return tx.receipt.update({
         where: { id },
         data: {
-          isDeleted: true,
-          isDeleteRequested: false,
+          ...archiveData(actor),
           updatedById: actorUserId(actor),
         },
       });
@@ -864,7 +874,7 @@ const deleteReceipt = catchAsync(async (req, res) => {
 
     logActivity({
       userId: actor.id,
-      action: 'ADMIN_DELETE_RECEIPT',
+      action: 'ARCHIVE_RECEIPT',
       entityType: 'RECEIPT',
       entityId: id,
       req,
@@ -873,7 +883,7 @@ const deleteReceipt = catchAsync(async (req, res) => {
 
     sendResponse(res, {
       statusCode: httpStatus.OK,
-      message: 'Receipt deleted successfully and product inventory has been restored',
+      message: 'Receipt archived successfully and product inventory has been restored',
       data: result,
     });
   } else {
@@ -922,7 +932,7 @@ const deleteReceipt = catchAsync(async (req, res) => {
 });
 
 /**
- * Confirm delete request (Admin only) and restore inventory stock
+ * Confirm delete request (Admin only): archives the receipt and restores inventory stock
  */
 const confirmDeleteReceipt = catchAsync(async (req, res) => {
   const { id } = req.params;
@@ -933,17 +943,17 @@ const confirmDeleteReceipt = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
   }
 
   const activeReturnCount = await prisma.returnInvoice.count({
-    where: { receiptId: id, isDeleted: false },
+    where: { receiptId: id, isDeleted: false, isArchived: false },
   });
   if (activeReturnCount > 0) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      'Cannot delete this receipt while return invoices exist. Delete the return invoices first.',
+      'Cannot archive this receipt while return invoices exist. Archive the return invoices first.',
     );
   }
 
@@ -953,8 +963,7 @@ const confirmDeleteReceipt = catchAsync(async (req, res) => {
     return tx.receipt.update({
       where: { id },
       data: {
-        isDeleted: true,
-        isDeleteRequested: false,
+        ...archiveData(actor),
         updatedById: actorUserId(actor),
       },
     });
@@ -972,8 +981,8 @@ const confirmDeleteReceipt = catchAsync(async (req, res) => {
   if (receipt.deleteRequestedById) {
     sendNotification({
       userId: receipt.deleteRequestedById,
-      title: 'Receipt Deletion Confirmed',
-      message: `Admin confirmed deletion for Receipt ${receipt.receiptNumber}.`,
+      title: 'Receipt Deletion Approved',
+      message: `Admin approved deletion for Receipt ${receipt.receiptNumber}. The receipt has been archived.`,
       type: NotificationType.SUCCESS,
       link: `/receipts`,
       req,
@@ -982,7 +991,7 @@ const confirmDeleteReceipt = catchAsync(async (req, res) => {
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
-    message: 'Receipt deletion confirmed and inventory stock restored',
+    message: 'Receipt deletion approved, receipt archived and inventory stock restored',
     data: result,
   });
 });
@@ -998,7 +1007,7 @@ const rejectDeleteReceipt = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
   }
 
@@ -1041,7 +1050,7 @@ const rejectDeleteReceipt = catchAsync(async (req, res) => {
 });
 
 /**
- * Restore / Undo soft-deleted receipt (Admin only) and re-deduct inventory
+ * Restore (un-archive) an archived receipt (Admin and Superadmin) and re-deduct inventory
  */
 const restoreReceipt = catchAsync(async (req, res) => {
   const { id } = req.params;
@@ -1052,8 +1061,11 @@ const restoreReceipt = catchAsync(async (req, res) => {
     include: { items: true },
   });
 
-  if (!receipt || !receipt.isDeleted) {
-    throw new AppError(httpStatus.BAD_REQUEST, 'Receipt is not in deleted state');
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
+  }
+  if (!receipt.isArchived) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Receipt is not archived');
   }
 
   const warnings: string[] = [];
@@ -1064,11 +1076,7 @@ const restoreReceipt = catchAsync(async (req, res) => {
     return tx.receipt.update({
       where: { id },
       data: {
-        isDeleted: false,
-        isDeleteRequested: false,
-        deleteRequestedById: null,
-        deleteRequestedAt: null,
-        deleteReason: null,
+        ...unarchiveData(),
         updatedById: actorUserId(actor),
       },
     });
@@ -1076,7 +1084,7 @@ const restoreReceipt = catchAsync(async (req, res) => {
 
   logActivity({
     userId: actor.id,
-    action: 'ADMIN_RESTORE_RECEIPT',
+    action: 'RESTORE_RECEIPT',
     entityType: 'RECEIPT',
     entityId: id,
     req,
@@ -1094,6 +1102,74 @@ const restoreReceipt = catchAsync(async (req, res) => {
 });
 
 /**
+ * Permanently delete an archived receipt (Superadmin / privileged token only).
+ * Stock was already restored when it was archived, so this only hides the record for good.
+ */
+const permanentDeleteReceipt = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+
+  const receipt = await prisma.receipt.findUnique({ where: { id } });
+
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found');
+  }
+  if (!receipt.isArchived) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Only archived receipts can be permanently deleted. Archive it first.',
+    );
+  }
+
+  await prisma.receipt.update({
+    where: { id },
+    data: { isDeleted: true, updatedById: actorUserId(actor) },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'PERMANENT_DELETE_RECEIPT',
+    entityType: 'RECEIPT',
+    entityId: id,
+    req,
+    details: { receiptNumber: receipt.receiptNumber },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Receipt permanently deleted',
+    data: null,
+  });
+});
+
+/**
+ * Permanently delete every archived receipt ("Clear all" on the Archive tab).
+ * Superadmin / privileged token only.
+ */
+const clearArchivedReceipts = catchAsync(async (req, res) => {
+  const actor = req.user;
+
+  const { count } = await prisma.receipt.updateMany({
+    where: { isArchived: true, isDeleted: false },
+    data: { isDeleted: true, updatedById: actorUserId(actor) },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'CLEAR_ARCHIVED_RECEIPTS',
+    entityType: 'RECEIPT',
+    req,
+    details: { count },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: `${count} archived receipt(s) permanently deleted`,
+    data: { count },
+  });
+});
+
+/**
  * Add partial or full installment payment towards customer due amount
  */
 const addPayment = catchAsync(async (req, res) => {
@@ -1105,7 +1181,7 @@ const addPayment = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
   }
 
@@ -1231,7 +1307,7 @@ const updatePayment = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
   }
 
@@ -1356,7 +1432,7 @@ const deletePayment = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
   }
 
@@ -1457,7 +1533,7 @@ const approvePayment = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
   }
 
@@ -1558,7 +1634,7 @@ const updateReceiptStatus = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!receipt || receipt.isDeleted) {
+  if (!receipt || receipt.isDeleted || receipt.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Receipt not found or is deleted');
   }
 
@@ -1624,6 +1700,8 @@ export const ReceiptServices = {
   confirmDeleteReceipt,
   rejectDeleteReceipt,
   restoreReceipt,
+  permanentDeleteReceipt,
+  clearArchivedReceipts,
   addPayment,
   updatePayment,
   deletePayment,

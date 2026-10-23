@@ -14,6 +14,7 @@ import { logActivity } from '../../utils/activityLog';
 import { notifyAdmins, sendNotification } from '../../utils/notification';
 import { productSearchableFields } from './product.constant';
 import { generateSlug } from '../../utils/slug';
+import { buildTokenSearchWhere, splitSearchTokens } from '../../utils/searchTokens';
 import { roundToTwo } from '../Receipt/receipt.utils';
 import { parseProductProfitQuery } from './product.validation';
 import {
@@ -26,6 +27,7 @@ import {
   type ProductProfitAgg,
 } from './product.profit.utils';
 import { actorUserId } from '../../utils/privilegedAuth';
+import { archiveData, unarchiveData } from '../../utils/archive';
 
 // Lightweight list for product pickers (receipt form etc.).
 // Returns only the fields a dropdown row needs; active products only.
@@ -35,12 +37,8 @@ const getProductOptions = catchAsync(async (req, res) => {
 
   const where = {
     isDeleted: false,
-    ...(searchTerm && {
-      OR: [
-        { name: { contains: searchTerm, mode: 'insensitive' as const } },
-        { slug: { contains: searchTerm, mode: 'insensitive' as const } },
-      ],
-    }),
+    isArchived: false,
+    ...buildTokenSearchWhere(searchTerm, ['name', 'slug']),
   };
 
   const [products, total] = await Promise.all([
@@ -76,6 +74,7 @@ const createProduct = catchAsync(async (req, res) => {
   // Check for duplicate product by slug or case-insensitive name
   const existingProduct = await prisma.product.findFirst({
     where: {
+      isDeleted: false,
       OR: [
         { slug },
         { name: { equals: trimmedName, mode: 'insensitive' } },
@@ -84,7 +83,7 @@ const createProduct = catchAsync(async (req, res) => {
   });
 
   if (existingProduct) {
-    if (!existingProduct.isDeleted) {
+    if (!existingProduct.isArchived) {
       throw new AppError(
         httpStatus.CONFLICT,
         `A product with name "${trimmedName}" already exists and is active. Please use a different name or edit the existing product.`,
@@ -92,7 +91,7 @@ const createProduct = catchAsync(async (req, res) => {
     } else {
       throw new AppError(
         httpStatus.CONFLICT,
-        `A product with name "${trimmedName}" already exists in deleted/trash items. Please restore it or choose a different name.`,
+        `A product with name "${trimmedName}" already exists in the archive. Please restore it or choose a different name.`,
       );
     }
   }
@@ -147,13 +146,12 @@ const getAllProducts = catchAsync(async (req, res) => {
   const actor = req.user;
   const query: Record<string, unknown> = { ...req.query };
 
-  // For cashiers, default isDeleted to false unless admin requests deleted items
-  if (actor.role === UserRoleEnum.CASHIER || query.isDeleted === undefined) {
-    query.isDeleted = false;
-  } else if (query.isDeleted === 'true') {
-    query.isDeleted = true;
-  } else if (query.isDeleted === 'false') {
-    query.isDeleted = false;
+  // Fully deleted records are never listed. Only admins can view the archive.
+  query.isDeleted = false;
+  if (actor.role === UserRoleEnum.CASHIER || query.isArchived !== 'true') {
+    query.isArchived = false;
+  } else {
+    query.isArchived = true;
   }
 
   if (query.isDeleteRequested === 'true') {
@@ -209,6 +207,8 @@ const getAllProducts = catchAsync(async (req, res) => {
       stock: true,
       description: true,
       isDeleted: true,
+      isArchived: true,
+      archivedAt: true,
       isDeleteRequested: true,
       deleteRequestedAt: true,
       deleteReason: true,
@@ -266,7 +266,7 @@ const getAllProducts = catchAsync(async (req, res) => {
 const getProductStats = catchAsync(async (_req, res) => {
   const [productAgg, soldAgg, returnedAgg, lowStockCount] = await Promise.all([
     prisma.product.aggregate({
-      where: { isDeleted: false },
+      where: { isDeleted: false, isArchived: false },
       _count: { _all: true },
       _sum: { stock: true },
     }),
@@ -275,6 +275,7 @@ const getProductStats = catchAsync(async (_req, res) => {
         productId: { not: null },
         receipt: {
           isDeleted: false,
+          isArchived: false,
           status: { not: ReceiptStatus.REJECTED },
         },
       },
@@ -285,6 +286,7 @@ const getProductStats = catchAsync(async (_req, res) => {
         productId: { not: null },
         returnInvoice: {
           isDeleted: false,
+          isArchived: false,
           status: { not: ReceiptStatus.REJECTED },
         },
       },
@@ -293,6 +295,7 @@ const getProductStats = catchAsync(async (_req, res) => {
     prisma.product.count({
       where: {
         isDeleted: false,
+        isArchived: false,
         stock: { lte: 5 },
       },
     }),
@@ -351,7 +354,7 @@ const updateProduct = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!existing || existing.isDeleted) {
+  if (!existing || existing.isDeleted || existing.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
   }
 
@@ -365,6 +368,7 @@ const updateProduct = catchAsync(async (req, res) => {
     const duplicate = await prisma.product.findFirst({
       where: {
         id: { not: id },
+        isDeleted: false,
         OR: [
           { slug: newSlug },
           { name: { equals: trimmedName, mode: 'insensitive' } },
@@ -373,7 +377,7 @@ const updateProduct = catchAsync(async (req, res) => {
     });
 
     if (duplicate) {
-      if (!duplicate.isDeleted) {
+      if (!duplicate.isArchived) {
         throw new AppError(
           httpStatus.CONFLICT,
           `A product with name "${trimmedName}" already exists and is active. Please choose a different name.`,
@@ -381,7 +385,7 @@ const updateProduct = catchAsync(async (req, res) => {
       } else {
         throw new AppError(
           httpStatus.CONFLICT,
-          `A product with name "${trimmedName}" already exists in deleted/trash items. Please restore it or choose a different name.`,
+          `A product with name "${trimmedName}" already exists in the archive. Please restore it or choose a different name.`,
         );
       }
     }
@@ -425,8 +429,8 @@ const updateProduct = catchAsync(async (req, res) => {
 });
 
 /**
- * Delete product handler with multi-role confirmation flow:
- * - Admin/Superadmin: Soft-deletes immediately (isDeleted: true).
+ * Delete product handler (archive flow):
+ * - Admin/Superadmin: Archives immediately (isArchived: true). Not a permanent delete.
  * - Cashier: Submits delete request (isDeleteRequested: true) and alerts admins.
  */
 const deleteProduct = catchAsync(async (req, res) => {
@@ -438,26 +442,24 @@ const deleteProduct = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!product || product.isDeleted) {
+  if (!product || product.isDeleted || product.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
   }
 
   const isAdmin = actor.role === UserRoleEnum.SUPERADMIN || actor.role === UserRoleEnum.ADMIN;
 
   if (isAdmin) {
-    // Immediate soft delete by Admin
     const result = await prisma.product.update({
       where: { id },
       data: {
-        isDeleted: true,
-        isDeleteRequested: false,
+        ...archiveData(actor),
         updatedById: actorUserId(actor),
       },
     });
 
     logActivity({
       userId: actor.id,
-      action: 'ADMIN_DELETE_PRODUCT',
+      action: 'ARCHIVE_PRODUCT',
       entityType: 'PRODUCT',
       entityId: id,
       req,
@@ -466,7 +468,7 @@ const deleteProduct = catchAsync(async (req, res) => {
 
     sendResponse(res, {
       statusCode: httpStatus.OK,
-      message: 'Product deleted successfully',
+      message: 'Product archived successfully',
       data: result,
     });
   } else {
@@ -516,7 +518,7 @@ const deleteProduct = catchAsync(async (req, res) => {
 });
 
 /**
- * Confirm delete request (Admin only)
+ * Confirm delete request (Admin only) -> product is archived, not permanently deleted
  */
 const confirmDeleteProduct = catchAsync(async (req, res) => {
   const { id } = req.params;
@@ -526,15 +528,14 @@ const confirmDeleteProduct = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!product || product.isDeleted) {
+  if (!product || product.isDeleted || product.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
   }
 
   const result = await prisma.product.update({
     where: { id },
     data: {
-      isDeleted: true,
-      isDeleteRequested: false,
+      ...archiveData(actor),
       updatedById: actorUserId(actor),
     },
   });
@@ -553,7 +554,7 @@ const confirmDeleteProduct = catchAsync(async (req, res) => {
     sendNotification({
       userId: product.deleteRequestedById,
       title: 'Product Deletion Approved',
-      message: `Your request to delete "${product.name}" was approved by administrator.`,
+      message: `Your request to delete "${product.name}" was approved. The product has been archived.`,
       type: NotificationType.SUCCESS,
       link: '/products',
       req,
@@ -562,7 +563,7 @@ const confirmDeleteProduct = catchAsync(async (req, res) => {
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
-    message: 'Product deletion confirmed successfully',
+    message: 'Product deletion request approved and product archived',
     data: result,
   });
 });
@@ -578,7 +579,7 @@ const rejectDeleteProduct = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!product || product.isDeleted) {
+  if (!product || product.isDeleted || product.isArchived) {
     throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
   }
 
@@ -621,7 +622,7 @@ const rejectDeleteProduct = catchAsync(async (req, res) => {
 });
 
 /**
- * Restore soft-deleted product (Undo - Admin only)
+ * Restore an archived product (Admin and Superadmin)
  */
 const restoreProduct = catchAsync(async (req, res) => {
   const { id } = req.params;
@@ -631,26 +632,25 @@ const restoreProduct = catchAsync(async (req, res) => {
     where: { id },
   });
 
-  if (!product) {
+  if (!product || product.isDeleted) {
     throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
   }
 
-  if (!product.isDeleted) {
-    throw new AppError(httpStatus.BAD_REQUEST, 'Product is not deleted');
+  if (!product.isArchived) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Product is not archived');
   }
 
   const result = await prisma.product.update({
     where: { id },
     data: {
-      isDeleted: false,
-      isDeleteRequested: false,
+      ...unarchiveData(),
       updatedById: actorUserId(actor),
     },
   });
 
   logActivity({
     userId: actor.id,
-    action: 'ADMIN_RESTORE_PRODUCT',
+    action: 'RESTORE_PRODUCT',
     entityType: 'PRODUCT',
     entityId: id,
     req,
@@ -661,6 +661,74 @@ const restoreProduct = catchAsync(async (req, res) => {
     statusCode: httpStatus.OK,
     message: 'Product restored successfully',
     data: result,
+  });
+});
+
+/**
+ * Permanently delete an archived product (Superadmin / privileged token only).
+ * The record is flagged isDeleted and disappears from every frontend view.
+ */
+const permanentDeleteProduct = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const actor = req.user;
+
+  const product = await prisma.product.findUnique({ where: { id } });
+
+  if (!product || product.isDeleted) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Product not found');
+  }
+  if (!product.isArchived) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      'Only archived products can be permanently deleted. Archive it first.',
+    );
+  }
+
+  await prisma.product.update({
+    where: { id },
+    data: { isDeleted: true, updatedById: actorUserId(actor) },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'PERMANENT_DELETE_PRODUCT',
+    entityType: 'PRODUCT',
+    entityId: id,
+    req,
+    details: { name: product.name },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: 'Product permanently deleted',
+    data: null,
+  });
+});
+
+/**
+ * Permanently delete every archived product ("Clear all" on the Archive tab).
+ * Superadmin / privileged token only.
+ */
+const clearArchivedProducts = catchAsync(async (req, res) => {
+  const actor = req.user;
+
+  const { count } = await prisma.product.updateMany({
+    where: { isArchived: true, isDeleted: false },
+    data: { isDeleted: true, updatedById: actorUserId(actor) },
+  });
+
+  logActivity({
+    userId: actor.id,
+    action: 'CLEAR_ARCHIVED_PRODUCTS',
+    entityType: 'PRODUCT',
+    req,
+    details: { count },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: `${count} archived product(s) permanently deleted`,
+    data: { count },
   });
 });
 
@@ -702,6 +770,7 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
 
   const existingProducts = await prisma.product.findMany({
     where: {
+      isDeleted: false,
       OR: [
         { slug: { in: allSlugs } },
         { name: { in: allNames, mode: 'insensitive' } },
@@ -710,7 +779,7 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
   });
 
   // Check for conflicts with active products
-  const activeConflicts = existingProducts.filter((p) => !p.isDeleted);
+  const activeConflicts = existingProducts.filter((p) => !p.isArchived);
   if (activeConflicts.length > 0) {
     const conflictNames = activeConflicts.map((p) => `"${p.name}"`).join(', ');
     throw new AppError(
@@ -721,7 +790,7 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
 
   // Build a map of deleted products to restore
   const deletedMap = new Map<string, typeof existingProducts[0]>();
-  for (const dp of existingProducts.filter((p) => p.isDeleted)) {
+  for (const dp of existingProducts.filter((p) => p.isArchived)) {
     if (dp.slug) deletedMap.set(dp.slug, dp);
     deletedMap.set(dp.name.trim().toLowerCase(), dp);
   }
@@ -749,11 +818,7 @@ const bulkCreateProducts = catchAsync(async (req, res) => {
             buyingPrice: item.buyingPrice ?? null,
             stock: item.stock ?? 0,
             description: item.description ?? null,
-            isDeleted: false,
-            isDeleteRequested: false,
-            deleteRequestedById: null,
-            deleteRequestedAt: null,
-            deleteReason: null,
+            ...unarchiveData(),
             updatedById: actorUserId(actor),
           },
         });
@@ -819,6 +884,7 @@ const getProductProfit = catchAsync(async (req, res) => {
 
   const receiptWhere = {
     isDeleted: false,
+    isArchived: false,
     status: { not: ReceiptStatus.REJECTED },
     ...(createdAtRange ? { createdAt: createdAtRange } : {}),
   };
@@ -867,6 +933,7 @@ const getProductProfit = catchAsync(async (req, res) => {
         receiptItemId: { in: receiptItemIds },
         returnInvoice: {
           isDeleted: false,
+          isArchived: false,
           status: { not: ReceiptStatus.REJECTED },
           ...(createdAtRange ? { createdAt: createdAtRange } : {}),
         },
@@ -923,8 +990,11 @@ const getProductProfit = catchAsync(async (req, res) => {
     .filter(row => row.soldQty > 0);
 
   if (query.searchTerm) {
-    const term = query.searchTerm.toLowerCase();
-    rows = rows.filter(row => row.productName.toLowerCase().includes(term));
+    const tokens = splitSearchTokens(query.searchTerm.toLowerCase());
+    rows = rows.filter(row => {
+      const name = row.productName.toLowerCase();
+      return tokens.every(token => name.includes(token));
+    });
   }
 
   rows = sortProductProfitRows(rows, query.sortBy, query.sortOrder);
@@ -975,4 +1045,6 @@ export const ProductServices = {
   confirmDeleteProduct,
   rejectDeleteProduct,
   restoreProduct,
+  permanentDeleteProduct,
+  clearArchivedProducts,
 };
