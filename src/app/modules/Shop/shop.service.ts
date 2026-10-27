@@ -32,6 +32,26 @@ const getShopDetails = catchAsync(async (req, res) => {
   });
 });
 
+// Public storefront info for the homepage; never expose who created/updated it
+const getPublicShopDetails = catchAsync(async (req, res) => {
+  const result = await prisma.shop.findFirst({
+    select: {
+      name: true,
+      proprietor: true,
+      logo: true,
+      phoneNumbers: true,
+      emails: true,
+      locations: true,
+    },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    message: result ? 'Shop details retrieved successfully' : 'No shop details configured yet',
+    data: result || null,
+  });
+});
+
 const upsertShopDetails = catchAsync(async (req, res) => {
   const actor = req.user;
   const payload = req.body;
@@ -132,5 +152,6 @@ const upsertShopDetails = catchAsync(async (req, res) => {
 
 export const ShopServices = {
   getShopDetails,
+  getPublicShopDetails,
   upsertShopDetails,
 };

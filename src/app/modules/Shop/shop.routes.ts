@@ -6,6 +6,9 @@ import { ShopServices } from './shop.service';
 
 const router = express.Router();
 
+// Public shop info for the homepage (no auth)
+router.get('/public', ShopServices.getPublicShopDetails);
+
 // Get shop details (accessible to any authenticated user)
 router.get('/', auth('ANY'), ShopServices.getShopDetails);
 
